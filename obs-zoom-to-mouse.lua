@@ -655,7 +655,7 @@ function on_timer()
                 end
 
                 -- We set the current position as the center for the follow safezone
-                if is_following_mouse and follow_border < 0.5 then
+                if is_following_mouse and follow_border < 50 then
                     zoom_target = get_target_position(zoom_info)
                     locked_center = { x = zoom_target.clamped_center.x, y = zoom_target.clamped_center.y }
                     log("Cursor stopped. Tracking locked to " .. locked_center.x .. ", " .. locked_center.y)
