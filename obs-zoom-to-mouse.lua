@@ -31,6 +31,7 @@ local zoom_info = {
 local zoom_time = 0
 local zoom_target = nil
 local locked_center = nil
+local locked_last_pos = nil
 local hotkey_zoom_id = nil
 local hotkey_follow_id = nil
 local is_timer_running = false
@@ -42,6 +43,7 @@ local is_following_mouse = false
 local follow_speed = 0.1
 local follow_border = 0
 local follow_safezone_sensitivity = 10
+local use_follow_auto_lock = false
 local zoom_value = 2
 local zoom_speed = 0.1
 local use_monitor_override = false
@@ -575,6 +577,7 @@ function on_toggle_zoom(pressed)
                 zoom_state = ZoomState.ZoomingOut
                 zoom_time = 0
                 locked_center = nil
+                locked_last_pos = nil
                 zoom_target = { crop = crop_filter_info_orig, c = sceneitem_crop_orig }
                 if is_following_mouse then
                     is_following_mouse = false
@@ -587,6 +590,7 @@ function on_toggle_zoom(pressed)
                 zoom_info.zoom_to = zoom_value
                 zoom_time = 0
                 locked_center = nil
+                locked_last_pos = nil
                 zoom_target = get_target_position(zoom_info)
             end
 
@@ -608,6 +612,11 @@ function on_timer()
         if zoom_state == ZoomState.ZoomingOut or zoom_state == ZoomState.ZoomingIn then
             -- When we are doing a zoom animation (in or out) we linear interpolate the crop to the target
             if zoom_time <= 1 then
+                -- If we have auto-follow turned on, make sure to keep the mouse in the view while we zoom
+                -- This is incase the user is moving the mouse a lot while the animation (which may be slow) is playing
+                if zoom_state == ZoomState.ZoomingIn and use_auto_follow_mouse then
+                    zoom_target = get_target_position(zoom_info)
+                end
                 crop_filter_info.x = lerp(crop_filter_info.x, zoom_target.crop.x, zoom_time)
                 crop_filter_info.y = lerp(crop_filter_info.y, zoom_target.crop.y, zoom_time)
                 crop_filter_info.w = lerp(crop_filter_info.w, zoom_target.crop.w, zoom_time)
@@ -647,6 +656,12 @@ function on_timer()
                         if math.abs(diff.x) > track.x or math.abs(diff.y) > track.y then
                             -- Cursor moved into the active border area, so resume tracking by clearing out the locked_center
                             locked_center = nil
+                            locked_last_pos = {
+                                x = zoom_target.raw_center.x,
+                                y = zoom_target.raw_center.y,
+                                diff_x = diff.x,
+                                diff_y = diff.y
+                            }
                             log("Locked area exited - resume tracking")
                         end
                     end
@@ -657,15 +672,35 @@ function on_timer()
                         set_crop_settings(crop_filter_info)
 
                         -- Check to see if the mouse has stopped moving long enough to create a new safe zone
-                        if is_following_mouse and locked_center == nil then
+                        if is_following_mouse and locked_center == nil and locked_last_pos ~= nil then
                             local diff = {
                                 x = math.abs(crop_filter_info.x - zoom_target.crop.x),
-                                y = math.abs(crop_filter_info.y - zoom_target.crop.y)
+                                y = math.abs(crop_filter_info.y - zoom_target.crop.y),
+                                auto_x = zoom_target.raw_center.x - locked_last_pos.x,
+                                auto_y = zoom_target.raw_center.y - locked_last_pos.y
                             }
 
-                            if diff.x <= follow_safezone_sensitivity and diff.y <= follow_safezone_sensitivity then
-                                locked_center = { x = zoom_target.clamped_center.x, y = zoom_target.clamped_center.y }
-                                log("Cursor stopped. Tracking locked to " .. locked_center.x .. ", " .. locked_center.y )
+                            locked_last_pos.x = zoom_target.raw_center.x
+                            locked_last_pos.y = zoom_target.raw_center.y
+
+                            local lock = false
+                            if math.abs(locked_last_pos.diff_x) > math.abs(locked_last_pos.diff_y) then
+                                if (diff.auto_x < 0 and locked_last_pos.diff_x > 0) or (diff.auto_x > 0 and locked_last_pos.diff_x < 0) then
+                                    lock = true
+                                end
+                            else
+                                if (diff.auto_y < 0 and locked_last_pos.diff_y > 0) or (diff.auto_y > 0 and locked_last_pos.diff_y < 0) then
+                                    lock = true
+                                end
+                            end
+
+                            if (lock and use_follow_auto_lock) or (diff.x <= follow_safezone_sensitivity and diff.y <= follow_safezone_sensitivity) then
+                                -- Make the new center the position of the current camera (which might not be the same as the mouse since we lerp towards it)
+                                locked_center = {
+                                    x = math.floor(crop_filter_info.x + zoom_target.crop.w * 0.5),
+                                    y = math.floor(crop_filter_info.y + zoom_target.crop.h * 0.5)
+                                }
+                                log("Cursor stopped. Tracking locked to " .. locked_center.x .. ", " .. locked_center.y)
                             end
                         end
                     end
@@ -735,13 +770,46 @@ function on_update_transform()
 end
 
 function on_settings_modified(props, prop, settings)
+    local name = obs.obs_property_name(prop)
+
     -- Show/Hide the settings based on if the checkbox is checked or not
-    local visible = obs.obs_data_get_bool(settings, "use_monitor_override")
-    obs.obs_property_set_visible(obs.obs_properties_get(props, "monitor_override_x"), visible)
-    obs.obs_property_set_visible(obs.obs_properties_get(props, "monitor_override_y"), visible)
-    obs.obs_property_set_visible(obs.obs_properties_get(props, "monitor_override_w"), visible)
-    obs.obs_property_set_visible(obs.obs_properties_get(props, "monitor_override_h"), visible)
+    if name == "use_monitor_override" then
+        local visible = obs.obs_data_get_bool(settings, "use_monitor_override")
+        obs.obs_property_set_visible(obs.obs_properties_get(props, "monitor_override_x"), visible)
+        obs.obs_property_set_visible(obs.obs_properties_get(props, "monitor_override_y"), visible)
+        obs.obs_property_set_visible(obs.obs_properties_get(props, "monitor_override_w"), visible)
+        obs.obs_property_set_visible(obs.obs_properties_get(props, "monitor_override_h"), visible)
+    elseif name == "debug_logs" then
+        if obs.obs_data_get_bool(settings, "debug_logs") then
+            log_current_settings()
+        end
+    end
+
     return true
+end
+
+---
+-- Write the current settings into the log for debugging and user issue reports
+function log_current_settings()
+    local settings = {
+        zoom_value = zoom_value,
+        zoom_speed = zoom_speed,
+        use_auto_follow_mouse = use_auto_follow_mouse,
+        use_follow_outside_bounds = use_follow_outside_bounds,
+        follow_speed = follow_speed,
+        follow_border = follow_border,
+        follow_safezone_sensitivity = follow_safezone_sensitivity,
+        use_follow_auto_lock = use_follow_auto_lock,
+        use_monitor_override = use_monitor_override,
+        monitor_override_x = monitor_override_x,
+        monitor_override_y = monitor_override_y,
+        monitor_override_w = monitor_override_w,
+        monitor_override_h = monitor_override_h,
+        debug_logs = debug_logs
+    }
+
+    log("Current settings:")
+    log(format_table(settings))
 end
 
 function on_print_help()
@@ -759,6 +827,7 @@ function on_print_help()
         "Follow Speed: The speed at which the zoomed area will follow the mouse when tracking\n" ..
         "Follow Border: The %distance from the edge of the source that will re-enable mouse tracking\n" ..
         "Lock Sensitivity: How close the tracking needs to get before it locks into position and stops tracking until you enter the follow border\n" ..
+        "Auto Lock on reverse direction: Automatically stop tracking if you reverse the direction of the mouse\n" ..
         "Set manual monitor position: True to override the calculated x,y topleft position for the selected display\n" ..
         "X: The coordinate of the left most pixel of the display\n" ..
         "Y: The coordinate of the top most pixel of the display\n" ..
@@ -809,6 +878,7 @@ function script_properties()
     local follow_border = obs.obs_properties_add_int_slider(props, "follow_border", "Follow Border", 0, 50, 1)
     local safezone_sense = obs.obs_properties_add_int_slider(props,
         "follow_safezone_sensitivity", "Lock Sensitivity", 1, 20, 1)
+    local follow_auto_lock = obs.obs_properties_add_bool(props, "follow_auto_lock", "Auto Lock on reverse direction")
 
     local override = obs.obs_properties_add_bool(props, "use_monitor_override", "Set manual monitor position")
     local override_x = obs.obs_properties_add_int(props, "monitor_override_x", "X", 0, 10000, 1)
@@ -825,6 +895,7 @@ function script_properties()
     obs.obs_property_set_visible(override_w, use_monitor_override)
     obs.obs_property_set_visible(override_h, use_monitor_override)
     obs.obs_property_set_modified_callback(override, on_settings_modified)
+    obs.obs_property_set_modified_callback(debug, on_settings_modified)
 
     return props
 end
@@ -856,6 +927,7 @@ function script_load(settings)
     follow_speed = obs.obs_data_get_double(settings, "follow_speed")
     follow_border = obs.obs_data_get_int(settings, "follow_border")
     follow_safezone_sensitivity = obs.obs_data_get_int(settings, "follow_safezone_sensitivity")
+    use_follow_auto_lock = obs.obs_data_get_bool(settings, "follow_auto_lock")
     use_monitor_override = obs.obs_data_get_bool(settings, "use_monitor_override")
     monitor_override_x = obs.obs_data_get_int(settings, "monitor_override_x")
     monitor_override_y = obs.obs_data_get_int(settings, "monitor_override_y")
@@ -864,6 +936,10 @@ function script_load(settings)
     debug_logs = obs.obs_data_get_bool(settings, "debug_logs")
 
     obs.obs_frontend_add_event_callback(on_frontend_event)
+
+    if debug_logs then
+        log_current_settings()
+    end
 end
 
 function script_unload()
@@ -883,6 +959,7 @@ function script_defaults(settings)
     obs.obs_data_set_default_double(settings, "follow_speed", 0.1)
     obs.obs_data_set_default_int(settings, "follow_border", 2)
     obs.obs_data_set_default_int(settings, "follow_safezone_sensitivity", 4)
+    obs.obs_data_set_default_bool(settings, "follow_auto_lock", false)
     obs.obs_data_set_default_bool(settings, "use_monitor_override", false)
     obs.obs_data_set_default_int(settings, "monitor_override_x", 0)
     obs.obs_data_set_default_int(settings, "monitor_override_y", 0)
@@ -918,6 +995,7 @@ function script_update(settings)
     follow_speed = obs.obs_data_get_double(settings, "follow_speed")
     follow_border = obs.obs_data_get_int(settings, "follow_border")
     follow_safezone_sensitivity = obs.obs_data_get_int(settings, "follow_safezone_sensitivity")
+    use_follow_auto_lock = obs.obs_data_get_bool(settings, "follow_auto_lock")
     use_monitor_override = obs.obs_data_get_bool(settings, "use_monitor_override")
     monitor_override_x = obs.obs_data_get_int(settings, "monitor_override_x")
     monitor_override_y = obs.obs_data_get_int(settings, "monitor_override_y")
