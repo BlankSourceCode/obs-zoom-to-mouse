@@ -40,11 +40,12 @@ Inspired by [tryptech](https://github.com/tryptech)'s [obs-zoom-and-follow](http
    * **Force transform update**: Click to refresh the internal zoom data if you manually change the transform/filters on your zoom source
    * **Zoom Factor**: How much to zoom in by
    * **Zoom Speed**: The speed of the zoom in/out animation
-   * **Auto follow mouse**: True to track the cursor while you are zoomed in instead of waiting for the toggle follow hotkey
+   * **Auto follow mouse**: True to track the cursor automatically while you are zoomed in, instead of waiting for the `Toggle follow` hotkey to be pressed first
    * **Follow outside bounds**: True to track the cursor even when it is outside the bounds of the source
    * **Follow Speed**: The speed at which the zoomed area will follow the mouse when tracking
    * **Follow Border**: The %distance from the edge of the source that will re-enable mouse tracking
    * **Lock Sensitivity**: How close the tracking needs to get before it locks into position and stops tracking until you enter the follow border
+   * **Auto Lock on reverse direction**: Automatically stop tracking if you reverse the direction of the mouse.
    * **Set manual monitor position**: True to override the calculated x,y topleft position for the selected display
    * **X**: The coordinate of the left most pixel of the display
    * **Y**: The coordinate of the top most pixel of the display
@@ -56,6 +57,15 @@ Inspired by [tryptech](https://github.com/tryptech)'s [obs-zoom-and-follow](http
 1. In OBS, open File -> Settings -> Hotkeys 
    * Add a hotkey for `Toggle zoom to mouse` to zoom in and out
    * Add a hotkey for `Toggle follow mouse during zoom` to turn mouse tracking on and off (*Optional*)
+
+### More information on how mouse tracking works
+When you press the `Toggle zoom` hotkey the script will use the current mouse position as the center of the zoom. The script will then animate the width/height values of a crop/pan filter so it appears to zoom into that location. If you have `Auto follow mouse` turned on, then the x/y values of the filter will also change to keep the mouse in view as it is animating the zoom. Once the animation is complete, the script gives you a "safe zone" to move your cursor in without it moving the "camera". The idea was that you'd want to zoom in somewhere and move your mouse around to highlight code or whatever, without the screen moving so it would be easier to read text in the video.
+
+When you move your mouse to the edge of the zoom area, it will then start tracking the cursor and follow it around at the `Follow Speed`. It will continue to follow the cursor until you hold the mouse still for some amount of time determined by `Lock Sensitivity` at which point it will stop following and give you that safe zone again but now at the new center of the zoom.
+
+How close you need to get to the edge of the zoom to trigger the 'start following mode' is determined by the `Follow Border` setting. This value is a pertentage of the area from the edge. If you set this to 0%, it means that you need to move the mouse to the very edge of the area to trigger mouse tracking. Something like 4% will give you a small border around the area. Setting it to full 50% causes it to begin following the mouse whenever it gets closer than 50% to an edge, which means it will follow the cursor *all the time* essentially removing the "safe zone".
+
+You can also modify this behavior with the `Auto Lock on reverse direction` setting, which attempts to make the follow work more like camera panning in a video game. When moving your mouse to the edge of the screen (how close determined by `Follow Border`) it will cause the camera to pan in that direction. Instead of continuing to track the mouse until you keep it still, with this setting it will also stop tracking immediately if you move your mouse back towards the center. 
 
 ## Known Limitations
 * Currently this script only works on **Windows**
