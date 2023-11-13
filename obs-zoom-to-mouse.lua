@@ -248,7 +248,7 @@ function release_sceneitem()
         sceneitem = nil
     end
 
-    if source ~= nil then        
+    if source ~= nil then
         obs.obs_source_release(source)
         source = nil
     end
@@ -267,6 +267,7 @@ function refresh_sceneitem(find_newest)
         release_sceneitem()
 
         -- Get a matching source we can use for zooming in the current scene
+        log("Finding sceneitem for Zoom Source '" .. source_name .. "'")
         if source_name ~= nil then
             source = obs.obs_get_source_by_name(source_name)
             if source ~= nil then
@@ -274,29 +275,61 @@ function refresh_sceneitem(find_newest)
                 source_raw.width = obs.obs_source_get_width(source)
                 source_raw.height = obs.obs_source_get_height(source)
 
+                -- Get the current scene
                 local scene_source = obs.obs_frontend_get_current_scene()
                 if scene_source ~= nil then
-                    local scene = obs.obs_scene_from_source(scene_source)
-                    if scene ~= nil then
-                        sceneitem = obs.obs_scene_sceneitem_from_source(scene, source)
+                    local function find_scene_item_by_name(root_scene)
+                        local queue = {}
+                        table.insert(queue, root_scene)
 
-                        local x = obs.obs_scene_find_source(scene, source_name)
+                        while #queue > 0 do
+                            local s = table.remove(queue, 1)
+                            log("Looking in scene '" .. obs.obs_source_get_name(obs.obs_scene_get_source(s)) .. "'")
 
-                        if not x then
-                            log("Warning: Source not part of the current scene")
-                            obs.obs_source_release(scene_source)
-                            obs.obs_sceneitem_release(sceneitem)
-                            obs.obs_source_release(source)
+                            -- Check if the current scene has the target scene item
+                            local found = obs.obs_scene_find_source(s, source_name)
+                            if found ~= nil then
+                                log("Found sceneitem")
+                                obs.obs_sceneitem_addref(found)
+                                return found
+                            end
 
-                            sceneitem = nil
-                            source = nil
-                            return
+                            -- If the current scene has nested scenes, enqueue them for later examination
+                            local all_items = obs.obs_scene_enum_items(s)
+                            if all_items then
+                                for _, item in pairs(all_items) do
+                                    local nested = obs.obs_sceneitem_get_source(item)
+                                    if nested ~= nil and obs.obs_source_is_scene(nested) then
+                                        local nested_scene = obs.obs_scene_from_source(nested)
+                                        table.insert(queue, nested_scene)
+                                    end
+                                end
+                                obs.sceneitem_list_release(all_items)
+                            end
                         end
-                        monitor_info = get_monitor_info(source)
+
+                        return nil
                     end
+
+                    -- Find the sceneitem for the source_name by looking through all the items
+                    -- We start at the current scene and use a BFS to look into any nested scenes
+                    local current = obs.obs_scene_from_source(scene_source)
+                    sceneitem = find_scene_item_by_name(current)
 
                     obs.obs_source_release(scene_source)
                 end
+
+                if not sceneitem then
+                    log("Warning: Source not part of the current scene hierarchy")
+                    obs.obs_sceneitem_release(sceneitem)
+                    obs.obs_source_release(source)
+
+                    sceneitem = nil
+                    source = nil
+                    return
+                end
+
+                monitor_info = get_monitor_info(source)
             end
         end
     end
@@ -333,11 +366,13 @@ function refresh_sceneitem(find_newest)
         log("Source size determined as " .. source_width .. ", " .. source_height)
         if source_width == 0 or source_height == 0 then
             if monitor_info and monitor_info.height > 0 and monitor_info.height > 0 then
-                log("Warning: Something went wrong determining source size, defaulting to monitor size " .. monitor_info.width .. ", " .. monitor_info.height)
+                log("Warning: Something went wrong determining source size, defaulting to monitor size " ..
+                    monitor_info.width .. ", " .. monitor_info.height)
                 source_width = monitor_info.width
                 source_height = monitor_info.height
             else
-                log("Error: Something went wrong determining source size, try using the 'Set manual monitor position' option and adding override values")
+                log("Error: Something went wrong determining source size," ..
+                    "try using the 'Set manual monitor position' option and adding override values")
             end
         end
 
@@ -508,11 +543,10 @@ function get_target_position(zoom_info)
     }
 
     -- Keep the zoom in bounds of the source so that we never show something outside that user is trying to hide with existing crop settings
-    crop.x = clamp(0, (zoom_info.source_size.width - new_size.width), crop.x)
-    crop.y = clamp(0, (zoom_info.source_size.height - new_size.height), crop.y)
+    crop.x = math.floor(clamp(0, (zoom_info.source_size.width - new_size.width), crop.x))
+    crop.y = math.floor(clamp(0, (zoom_info.source_size.height - new_size.height), crop.y))
 
-
-    return { crop = crop, raw_center = mouse, clamped_center = { x = crop.x + crop.w * 0.5, y = crop.y + crop.h * 0.5 } }
+    return { crop = crop, raw_center = mouse, clamped_center = { x = math.floor(crop.x + crop.w * 0.5), y = math.floor(crop.y + crop.h * 0.5) } }
 end
 
 function on_toggle_follow(pressed)
@@ -542,6 +576,10 @@ function on_toggle_zoom(pressed)
                 zoom_time = 0
                 locked_center = nil
                 zoom_target = { crop = crop_filter_info_orig, c = sceneitem_crop_orig }
+                if is_following_mouse then
+                    is_following_mouse = false
+                    log("Tracking mouse is off (due to zoom out)")
+                end
             else
                 log("Zooming in")
                 -- To zoom in, we get a new target based on where the mouse was when zoom was clicked
@@ -593,12 +631,12 @@ function on_timer()
                 end
 
                 if not skip_frame then
-                    -- If we have a locked_center it means we are currently in a locked zone and 
+                    -- If we have a locked_center it means we are currently in a locked zone and
                     -- shouldn't track the mouse until it moves out of the area
                     if locked_center ~= nil then
                         local diff = {
-                            x = math.abs(zoom_target.raw_center.x - locked_center.x),
-                            y = math.abs(zoom_target.raw_center.y - locked_center.y)
+                            x = zoom_target.raw_center.x - locked_center.x,
+                            y = zoom_target.raw_center.y - locked_center.y
                         }
 
                         local track = {
