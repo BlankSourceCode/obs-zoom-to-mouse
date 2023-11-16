@@ -136,6 +136,20 @@ function lerp(v0, v1, t)
 end
 
 ---
+-- Ease a time value in and out
+---@param t number Time between 0 and 1
+---@return number
+function ease_in_out(t)
+    t = t * 2
+    if t < 1 then
+        return 0.5 * t * t * t
+    else
+        t = t - 2
+        return 0.5 * (t * t * t + 2)
+    end
+end
+
+---
 -- Clamps a given value between min and max
 ---@param min number The min value
 ---@param max number The max value
@@ -172,8 +186,9 @@ function get_monitor_info(source)
             -- TODO: Update this with some custom FFI calls to find the monitor top-left x and y coordinates if it doesn't work for anyone else
             -- TODO: Refactor this into something that would work with Windows/Linux/Mac assuming we can't do it like this
             if found then
-                local x, y = found:match("@ (%d+),(%d+)")
-                local width, height = found:match(": (%d+)x(%d+)")
+                log("Parsing display name: " .. found)
+                local x, y = found:match("(%d+),(%d+)")
+                local width, height = found:match("(%d+)x(%d+)")
 
                 info = { x = 0, y = 0, width = 0, height = 0 }
                 info.x = tonumber(x, 10)
@@ -186,6 +201,9 @@ function get_monitor_info(source)
                 if info.width == 0 and info.height == 0 then
                     info = nil
                 end
+            else
+                log("Warning: Could not find display name.\n" ..
+                    "Try using the 'Set manual monitor position' option and adding override values")
             end
         end
 
@@ -617,10 +635,10 @@ function on_timer()
                 if zoom_state == ZoomState.ZoomingIn and use_auto_follow_mouse then
                     zoom_target = get_target_position(zoom_info)
                 end
-                crop_filter_info.x = lerp(crop_filter_info.x, zoom_target.crop.x, zoom_time)
-                crop_filter_info.y = lerp(crop_filter_info.y, zoom_target.crop.y, zoom_time)
-                crop_filter_info.w = lerp(crop_filter_info.w, zoom_target.crop.w, zoom_time)
-                crop_filter_info.h = lerp(crop_filter_info.h, zoom_target.crop.h, zoom_time)
+                crop_filter_info.x = lerp(crop_filter_info.x, zoom_target.crop.x, ease_in_out(zoom_time))
+                crop_filter_info.y = lerp(crop_filter_info.y, zoom_target.crop.y, ease_in_out(zoom_time))
+                crop_filter_info.w = lerp(crop_filter_info.w, zoom_target.crop.w, ease_in_out(zoom_time))
+                crop_filter_info.h = lerp(crop_filter_info.h, zoom_target.crop.h, ease_in_out(zoom_time))
                 set_crop_settings(crop_filter_info)
             end
         else
@@ -953,11 +971,11 @@ end
 function script_defaults(settings)
     -- Default values for the script
     obs.obs_data_set_default_double(settings, "zoom_value", 2)
-    obs.obs_data_set_default_double(settings, "zoom_speed", 0.1)
-    obs.obs_data_set_default_bool(settings, "follow", false)
+    obs.obs_data_set_default_double(settings, "zoom_speed", 0.06)
+    obs.obs_data_set_default_bool(settings, "follow", true)
     obs.obs_data_set_default_bool(settings, "follow_outside_bounds", false)
-    obs.obs_data_set_default_double(settings, "follow_speed", 0.1)
-    obs.obs_data_set_default_int(settings, "follow_border", 2)
+    obs.obs_data_set_default_double(settings, "follow_speed", 0.25)
+    obs.obs_data_set_default_int(settings, "follow_border", 8)
     obs.obs_data_set_default_int(settings, "follow_safezone_sensitivity", 4)
     obs.obs_data_set_default_bool(settings, "follow_auto_lock", false)
     obs.obs_data_set_default_bool(settings, "use_monitor_override", false)
