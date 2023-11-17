@@ -36,6 +36,7 @@ local hotkey_zoom_id = nil
 local hotkey_follow_id = nil
 local is_timer_running = false
 local ppoint = nil
+local need_source_update = true
 
 local use_auto_follow_mouse = true
 local use_follow_outside_bounds = false
@@ -169,16 +170,22 @@ function get_monitor_info(source)
     if props ~= nil then
         local monitor_id_prop = obs.obs_properties_get(props, "monitor_id")
         if monitor_id_prop then
-            local to_match = obs.obs_data_get_string(obs.obs_source_get_settings(source), "monitor_id")
             local found = nil
-            local item_count = obs.obs_property_list_item_count(monitor_id_prop);
-            for i = 0, item_count do
-                local name = obs.obs_property_list_item_name(monitor_id_prop, i)
-                local value = obs.obs_property_list_item_string(monitor_id_prop, i)
-                if value == to_match then
-                    found = name
-                    break
+            local settings = obs.obs_source_get_settings(source)
+            if settings ~= nil then
+                local to_match = obs.obs_data_get_string(settings, "monitor_id")
+
+                local item_count = obs.obs_property_list_item_count(monitor_id_prop);
+                for i = 0, item_count do
+                    local name = obs.obs_property_list_item_name(monitor_id_prop, i)
+                    local value = obs.obs_property_list_item_string(monitor_id_prop, i)
+                    if value == to_match then
+                        found = name
+                        break
+                    end
                 end
+
+                obs.obs_data_release(settings)
             end
 
             -- This works for my machine as the monitor names are given as "U2790B: 3840x2160 @ 0,0 (Primary Monitor)"
@@ -201,9 +208,6 @@ function get_monitor_info(source)
                 if info.width == 0 and info.height == 0 then
                     info = nil
                 end
-            else
-                log("Warning: Could not find display name.\n" ..
-                    "Try using the 'Set manual monitor position' option and adding override values")
             end
         end
 
@@ -217,6 +221,13 @@ function get_monitor_info(source)
             width = monitor_override_w,
             height = monitor_override_h
         }
+
+        log("Using monitor override values:\n" .. format_table(info))
+    end
+
+    if not info then
+        log("Warning: Could not find display position and size values, " ..
+            "try using the 'Set manual display position' option and adding override values")
     end
 
     return info
@@ -274,87 +285,112 @@ function release_sceneitem()
     end
 end
 
+function find_zoomable_source()
+    local function find_source(root_scene)
+        local found = nil
+        local queue = {}
+        table.insert(queue, root_scene)
+
+        while #queue > 0 do
+            local s = table.remove(queue, 1)
+            log("Looking in scene '" .. obs.obs_source_get_name(obs.obs_scene_get_source(s)) .. "'")
+
+            -- If the current scene has nested scenes, enqueue them for later examination
+            local all_items = obs.obs_scene_enum_items(s)
+            if all_items then
+                for _, item in pairs(all_items) do
+                    local nested = obs.obs_sceneitem_get_source(item)
+                    if nested ~= nil then
+                        local filters = obs.obs_source_enum_filters(nested)
+                        if filters ~= nil then
+                            for k, filter in pairs(filters) do
+                                local id = obs.obs_source_get_id(filter)
+                                if id == "zoom_to_mouse_filter" then
+                                    local info = nil
+                                    local filter_settings = obs.obs_source_get_settings(filter)
+                                    if filter_settings ~= nil then
+                                        info = {
+                                            x = obs.obs_data_get_int(filter_settings, "x"),
+                                            y = obs.obs_data_get_int(filter_settings, "y"),
+                                            width = obs.obs_data_get_int(filter_settings, "width"),
+                                            height = obs.obs_data_get_int(filter_settings, "height")
+                                        }
+                                        obs.obs_data_release(filter_settings)
+                                    end
+
+                                    obs.obs_source_addref(nested)
+                                    obs.obs_sceneitem_addref(item)
+
+                                    found = {
+                                        source = nested,
+                                        sceneitem = item,
+                                        info = info
+                                    }
+
+                                    break
+                                end
+                            end
+
+                            obs.source_list_release(filters)
+                        end
+
+                        if found ~= nil then
+                            break
+                        end
+
+                        if obs.obs_source_is_scene(nested) then
+                            local nested_scene = obs.obs_scene_from_source(nested)
+                            table.insert(queue, nested_scene)
+                        end
+                    end
+                end
+                obs.sceneitem_list_release(all_items)
+            end
+        end
+
+        return found
+    end
+
+    -- Get the current scene
+    local zoomable = nil
+    local scene_source = obs.obs_frontend_get_current_scene()
+    if scene_source ~= nil then
+        local current = obs.obs_scene_from_source(scene_source)
+        zoomable = find_source(current)
+        obs.obs_source_release(scene_source)
+    end
+
+    return zoomable
+end
+
 ---
 -- Updates the current sceneitem with a refreshed set of data from the source
 -- Optionally will release the existing sceneitem and get a new one from the current scene
 ---@param find_newest boolean True to release the current sceneitem and get a new one
 function refresh_sceneitem(find_newest)
-    -- TODO: Figure out why we need to get the size from the named source during update instead of via the sceneitem source
-    local source_raw = { width = 0, height = 0 }
-
     if find_newest then
         -- Release the current sceneitem now that we are replacing it
         release_sceneitem()
 
-        -- Get a matching source we can use for zooming in the current scene
-        log("Finding sceneitem for Zoom Source '" .. source_name .. "'")
-        if source_name ~= nil then
-            source = obs.obs_get_source_by_name(source_name)
-            if source ~= nil then
-                -- Get the source size, for some reason this works during load but the sceneitem source doesn't
-                source_raw.width = obs.obs_source_get_width(source)
-                source_raw.height = obs.obs_source_get_height(source)
+        local found = find_zoomable_source()
+        if found ~= nil then
+            source = found.source
+            sceneitem = found.sceneitem
+            monitor_info = found.info
+        end
 
-                -- Get the current scene
-                local scene_source = obs.obs_frontend_get_current_scene()
-                if scene_source ~= nil then
-                    local function find_scene_item_by_name(root_scene)
-                        local queue = {}
-                        table.insert(queue, root_scene)
+        if not sceneitem or not source then
+            log("Warning: Could not find zoomable in the current scene hierarchy")
+            obs.obs_sceneitem_release(sceneitem)
+            obs.obs_source_release(source)
 
-                        while #queue > 0 do
-                            local s = table.remove(queue, 1)
-                            log("Looking in scene '" .. obs.obs_source_get_name(obs.obs_scene_get_source(s)) .. "'")
-
-                            -- Check if the current scene has the target scene item
-                            local found = obs.obs_scene_find_source(s, source_name)
-                            if found ~= nil then
-                                log("Found sceneitem")
-                                obs.obs_sceneitem_addref(found)
-                                return found
-                            end
-
-                            -- If the current scene has nested scenes, enqueue them for later examination
-                            local all_items = obs.obs_scene_enum_items(s)
-                            if all_items then
-                                for _, item in pairs(all_items) do
-                                    local nested = obs.obs_sceneitem_get_source(item)
-                                    if nested ~= nil and obs.obs_source_is_scene(nested) then
-                                        local nested_scene = obs.obs_scene_from_source(nested)
-                                        table.insert(queue, nested_scene)
-                                    end
-                                end
-                                obs.sceneitem_list_release(all_items)
-                            end
-                        end
-
-                        return nil
-                    end
-
-                    -- Find the sceneitem for the source_name by looking through all the items
-                    -- We start at the current scene and use a BFS to look into any nested scenes
-                    local current = obs.obs_scene_from_source(scene_source)
-                    sceneitem = find_scene_item_by_name(current)
-
-                    obs.obs_source_release(scene_source)
-                end
-
-                if not sceneitem then
-                    log("Warning: Source not part of the current scene hierarchy")
-                    obs.obs_sceneitem_release(sceneitem)
-                    obs.obs_source_release(source)
-
-                    sceneitem = nil
-                    source = nil
-                    return
-                end
-
-                monitor_info = get_monitor_info(source)
-            end
+            sceneitem = nil
+            source = nil
+            return
         end
     end
 
-    if sceneitem ~= nil then
+    if sceneitem ~= nil and monitor_info ~= nil then
         -- Capture the original settings so we can restore them later
         sceneitem_info_orig = obs.obs_transform_info()
         obs.obs_sceneitem_get_info(sceneitem, sceneitem_info_orig)
@@ -374,26 +410,13 @@ function refresh_sceneitem(find_newest)
         end
 
         -- TODO: Figure out why we need this fallback code
-        local source_width = obs.obs_source_get_width(source)
-        local source_height = obs.obs_source_get_height(source)
-        if source_width == 0 then
-            source_width = source_raw.width
-        end
-        if source_height == 0 then
-            source_height = source_raw.height
-        end
+        local source_width = monitor_info.width
+        local source_height = monitor_info.height
 
         log("Source size determined as " .. source_width .. ", " .. source_height)
         if source_width == 0 or source_height == 0 then
-            if monitor_info and monitor_info.height > 0 and monitor_info.height > 0 then
-                log("Warning: Something went wrong determining source size, defaulting to monitor size " ..
-                    monitor_info.width .. ", " .. monitor_info.height)
-                source_width = monitor_info.width
-                source_height = monitor_info.height
-            else
-                log("Error: Something went wrong determining source size," ..
-                    "try using the 'Set manual monitor position' option and adding override values")
-            end
+            log("Error: Something went wrong determining source size," ..
+                "try using the 'Set manual monitor position' option and adding override values")
         end
 
         -- Convert the current transform into one we can correctly modify for zooming
@@ -603,6 +626,12 @@ function on_toggle_zoom(pressed)
                 end
             else
                 log("Zooming in")
+
+                if need_source_update or not sceneitem then
+                    need_source_update = false
+                    refresh_sceneitem(true)
+                end
+
                 -- To zoom in, we get a new target based on where the mouse was when zoom was clicked
                 zoom_state = ZoomState.ZoomingIn
                 zoom_info.zoom_to = zoom_value
@@ -846,7 +875,7 @@ function on_print_help()
         "Follow Border: The %distance from the edge of the source that will re-enable mouse tracking\n" ..
         "Lock Sensitivity: How close the tracking needs to get before it locks into position and stops tracking until you enter the follow border\n" ..
         "Auto Lock on reverse direction: Automatically stop tracking if you reverse the direction of the mouse\n" ..
-        "Set manual monitor position: True to override the calculated x,y topleft position for the selected display\n" ..
+        "Set manual display position: True to override the calculated x,y topleft position for the selected display\n" ..
         "X: The coordinate of the left most pixel of the display\n" ..
         "Y: The coordinate of the top most pixel of the display\n" ..
         "Width: The width of the display in pixels\n" ..
@@ -867,18 +896,14 @@ function script_properties()
     -- Populate the sources list with the known display-capture sources (OBS calls them 'monitor_capture' internally even though the UI says 'Display Capture')
     local sources_list = obs.obs_properties_add_list(props, "source", "Zoom Source", obs.OBS_COMBO_TYPE_LIST,
         obs.OBS_COMBO_FORMAT_STRING)
-    local sources = obs.obs_enum_sources()
-    if sources ~= nil then
-        for _, source in ipairs(sources) do
-            local source_id = obs.obs_source_get_id(source)
-            local source_type = obs.obs_source_get_id(source)
-            if source_type == "monitor_capture" then
-                local name = obs.obs_source_get_name(source)
-                obs.obs_property_list_add_string(sources_list, name, name)
-            end
-        end
-        obs.source_list_release(sources)
-    end
+
+    populate_zoom_sources(sources_list)
+
+    obs.obs_properties_add_button(props, "refresh", "Refresh zoom sources",
+        function()
+            populate_zoom_sources(sources_list)
+            return true
+        end)
 
     -- This button is used to recalculate the sceneitem and all the transform/crop values
     -- The idea being that if the user moves around the display capture source in their scene layout,
@@ -898,7 +923,7 @@ function script_properties()
         "follow_safezone_sensitivity", "Lock Sensitivity", 1, 20, 1)
     local follow_auto_lock = obs.obs_properties_add_bool(props, "follow_auto_lock", "Auto Lock on reverse direction")
 
-    local override = obs.obs_properties_add_bool(props, "use_monitor_override", "Set manual monitor position")
+    local override = obs.obs_properties_add_bool(props, "use_monitor_override", "Set manual display position")
     local override_x = obs.obs_properties_add_int(props, "monitor_override_x", "X", 0, 10000, 1)
     local override_y = obs.obs_properties_add_int(props, "monitor_override_y", "Y", 0, 10000, 1)
     local override_w = obs.obs_properties_add_int(props, "monitor_override_w", "X", 0, 10000, 1)
@@ -920,6 +945,9 @@ end
 
 function script_load(settings)
     sceneitem_info_orig = nil
+
+    -- Add our zoom filter
+    register_filter()
 
     -- Add our hotkey
     hotkey_zoom_id = obs.obs_hotkey_register_frontend("toggle_zoom_hotkey", "Toggle zoom to mouse",
@@ -1023,6 +1051,135 @@ function script_update(settings)
 
     -- Only do the expensive refresh if the user selected a new source
     if source_name ~= old_source_name then
-        refresh_sceneitem(true)
+        need_source_update = true
     end
+end
+
+function populate_zoom_sources(list)
+    obs.obs_property_list_clear(list)
+
+    local sources = obs.obs_enum_sources()
+    if sources ~= nil then
+        for _, source in ipairs(sources) do
+            local source_type = obs.obs_source_get_id(source)
+            if source_type == "monitor_capture" then
+                local name = obs.obs_source_get_name(source)
+                obs.obs_property_list_add_string(list, name, name)
+            elseif source_type == "source-clone" then
+                -- Support Source-Clone plugin
+                -- Here we grab the "clone" data from the plugin, and use that to check if the source is a monitor_capture,
+                -- If it is, we add the clone to the list but use the name of the source-clone source itself as the source to zoom
+                local clone_settings = obs.obs_source_get_settings(source)
+                if clone_settings ~= nil then
+                    local clone_name = obs.obs_data_get_string(clone_settings, "clone")
+                    local clone_source = obs.obs_get_source_by_name(clone_name)
+                    if clone_source ~= nil then
+                        local clone_type = obs.obs_source_get_id(clone_source)
+                        if clone_type == "monitor_capture" then
+                            local name = obs.obs_source_get_name(source)
+                            obs.obs_property_list_add_string(list, "Source-Clone: " .. clone_name, name)
+                        end
+
+                        obs.obs_source_release(clone_source)
+                    end
+
+                    obs.obs_data_release(clone_settings)
+                end
+            end
+        end
+
+        obs.source_list_release(sources)
+    end
+end
+
+filter_info = {}
+function register_filter()
+    filter_info.id = "zoom_to_mouse_filter"
+    filter_info.type = obs.OBS_SOURCE_TYPE_FILTER
+    filter_info.output_flags = obs.OBS_SOURCE_VIDEO
+
+    filter_info.get_name = function()
+        return "Zoomable"
+    end
+
+    filter_info.create = function(settings, source)
+
+        obs.obs_data_set_default_int(settings, "x", 0)
+        obs.obs_data_set_default_int(settings, "y", 0)
+        obs.obs_data_set_default_int(settings, "width", 1920)
+        obs.obs_data_set_default_int(settings, "height", 1080)
+
+        local data = {}
+        data.source = source
+        data.x = 0
+        data.y = 0
+        data.width = 0
+        data.height = 0
+        return data
+    end
+
+    filter_info.destroy = function(data)
+    end
+
+    filter_info.get_defaults = function(settings)
+        obs.obs_data_set_default_int(settings, "x", 0)
+        obs.obs_data_set_default_int(settings, "y", 0)
+        obs.obs_data_set_default_int(settings, "width", 1920)
+        obs.obs_data_set_default_int(settings, "height", 1080)
+    end
+
+    filter_info.get_properties = function(data)
+        local props = obs.obs_properties_create()
+        obs.obs_properties_add_int(props, "x", "X", 0, 10000, 1)
+        obs.obs_properties_add_int(props, "y", "Y", 0, 10000, 1)
+        obs.obs_properties_add_int(props, "width", "Width", 0, 10000, 1)
+        obs.obs_properties_add_int(props, "height", "Height", 0, 10000, 1)
+
+        obs.obs_properties_add_button(props, "sync", "Set from source",
+            function(props, p, d)
+                local s = obs.obs_source_get_settings(data.source)
+
+                local parent = obs.obs_filter_get_parent(data.source)
+                local monitor = get_monitor_info(parent)
+                if monitor ~= nil then
+                    obs.obs_data_set_int(s, "x", monitor.x)
+                    obs.obs_data_set_int(s, "y", monitor.y)
+                    obs.obs_data_set_int(s, "width", monitor.width)
+                    obs.obs_data_set_int(s, "height", monitor.height)
+                else
+                    obs.obs_data_set_int(s, "width", data.filter_width)
+                    obs.obs_data_set_int(s, "height", data.filter_height)
+                end
+
+                obs.obs_source_update(data.source, s)
+                obs.obs_data_release(s)
+                return true
+            end)
+        return props
+    end
+
+    filter_info.update = function(data, settings)
+        data.x = obs.obs_data_get_int(settings, "x")
+        data.y = obs.obs_data_get_int(settings, "y")
+        data.width = obs.obs_data_get_int(settings, "width")
+        data.height = obs.obs_data_get_int(settings, "height")
+        data.priority = obs.obs_data_get_int(settings, "priority")
+    end
+
+    filter_info.video_render = function(data)
+        local parent = obs.obs_filter_get_parent(data.source)
+        data.filter_width = obs.obs_source_get_base_width(parent)
+        data.filter_height = obs.obs_source_get_base_height(parent)
+        obs.obs_source_skip_video_filter(data.source)
+    end
+
+    filter_info.get_width = function(data)
+        return data.filter_width
+    end
+
+    filter_info.get_height = function(data)
+        return data.filter_height
+    end
+
+    obs.obs_register_source(filter_info)
 end
