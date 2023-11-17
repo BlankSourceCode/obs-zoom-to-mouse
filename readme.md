@@ -46,11 +46,14 @@ Inspired by [tryptech](https://github.com/tryptech)'s [obs-zoom-and-follow](http
    * **Follow Border**: The %distance from the edge of the source that will re-enable mouse tracking
    * **Lock Sensitivity**: How close the tracking needs to get before it locks into position and stops tracking until you enter the follow border
    * **Auto Lock on reverse direction**: Automatically stop tracking if you reverse the direction of the mouse.
-   * **Set manual monitor position**: True to override the calculated x,y topleft position for the selected display
+   * **Show all sources**: True to allow selecting any source as the Zoom Source - Note: You **MUST** set manual source position for non-display capture sources
+   * **Set manual source position**: True to override the calculated x/y (topleft position), width/height (size), and scaleX/scaleY (canvas scale factor) for the selected source
    * **X**: The coordinate of the left most pixel of the display
    * **Y**: The coordinate of the top most pixel of the display
    * **Width**: The width of the display in pixels
    * **Height**: The height of the display in pixels
+   * **Scale X**: The x scale factor to apply to the mouse position if the source is not 1:1 pixel size (normally left as 1, but useful for cloned sources that have been scaled)
+   * **Scale Y**: The y scale factor to apply to the mouse position if the source is not 1:1 pixel size (normally left as 1, but useful for cloned sources that have been scaled)
    * **More Info**: Show this text in the script log
    * **Enable debug logging**: Show additional debug information in the script log
 
@@ -65,14 +68,46 @@ When you move your mouse to the edge of the zoom area, it will then start tracki
 
 How close you need to get to the edge of the zoom to trigger the 'start following mode' is determined by the `Follow Border` setting. This value is a pertentage of the area from the edge. If you set this to 0%, it means that you need to move the mouse to the very edge of the area to trigger mouse tracking. Something like 4% will give you a small border around the area. Setting it to full 50% causes it to begin following the mouse whenever it gets closer than 50% to an edge, which means it will follow the cursor *all the time* essentially removing the "safe zone".
 
-You can also modify this behavior with the `Auto Lock on reverse direction` setting, which attempts to make the follow work more like camera panning in a video game. When moving your mouse to the edge of the screen (how close determined by `Follow Border`) it will cause the camera to pan in that direction. Instead of continuing to track the mouse until you keep it still, with this setting it will also stop tracking immediately if you move your mouse back towards the center. 
+You can also modify this behavior with the `Auto Lock on reverse direction` setting, which attempts to make the follow work more like camera panning in a video game. When moving your mouse to the edge of the screen (how close determined by `Follow Border`) it will cause the camera to pan in that direction. Instead of continuing to track the mouse until you keep it still, with this setting it will also stop tracking immediately if you move your mouse back towards the center.
+
+### More information on 'Show All Sources'
+If you enable the `Show all sources` option, you will be able to select any OBS source as the `Zoom Source`. This includes **any** non-display capture items such as cloned sources, browsers, or windows (or even things like audio input - which really won't work!).
+
+Selecting a non-display capture zoom source means the script will **not be able to automatically calculate the position and size of the source**, so zooming and tracking the mouse position will be wrong!
+
+To fix this, you MUST manually enter the size and position of your selected zoom source by enabling the `Set manual source position` option and filling in the `X`, `Y`, `Width`, and `Height` values. These values are the pixel topleft position and pixel size of the source on your overall desktop. You may also need to set the `Scale X` and `Scale Y` values if you find that the mouse position is incorrectly offset when you zoom, which is due to the source being scaled differently than the monitor you are using.
+
+Example 1 - A 500x300 window positioned at the center of a single 1000x900 monitor, would need the following values:
+   * X = 250 (center of monitor X 500 - half width of window 250)
+   * Y = 300 (center of monitor Y 450 - half height of window 150)
+   * Width = 500 (window width)
+   * Height = 300 (window height)
+
+Example 2 - A cloned display-capture source which is using the second 1920x1080 monitor of a two monitor side by side setup:
+   * X = 1921 (the left-most pixel position of the second monitor because it is immediately next to the other 1920 monitor)
+   * Y = 0 (the top-most pixel position of the monitor)
+   * Width = 1920 (monitor width)
+   * Height = 1080 (monitor height)
+
+Example 3 - A cloned scene source which is showing a 1920x1080 monitor but the scene canvas size is scaled down to 1024x768 setup:
+   * X = 0 (the left-most pixel position of the monitor)
+   * Y = 0 (the top-most pixel position of the monitor)
+   * Width = 1920 (monitor width)
+   * Height = 1080 (monitor height)
+   * Scale X = 0.53 (canvas width 1024 / monitor width 1920)
+   * Scale Y = 0.71 (canvas height 768 / monitor height 1080)
+
+I don't know of an easy way of getting these values automatically otherwise I would just have the script do it for you.
+
+Note: If you are also using a `transform crop` on the non-display capture source, you will need to manually convert it to a `Crop/Pad Filter` instead (the script has trouble trying to auto convert it for you for non-display sources).
 
 ## Known Limitations
 * Currently this script only works on **Windows**
    * Internally it uses [FFI](https://luajit.org/ext_ffi.html) to get the mouse position by loading the Win32 `GetCursorPos()` function
 
-* Only works on `Display Capture` sources
+* Only works on `Display Capture` sources (automatically)
    * In theory it should be able to work on window captures too, if there was a way to get the mouse position relative to that specific window
+   * You can now enable the [`Show all sources`](#More-information-on-'Show-All-Sources') option to select a non-display capture source, but you MUST set manual source position values
 
 ## Development Setup
 * Clone this repo
