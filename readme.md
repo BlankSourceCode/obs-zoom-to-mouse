@@ -46,7 +46,7 @@ Inspired by [tryptech](https://github.com/tryptech)'s [obs-zoom-and-follow](http
    * **Follow Border**: The %distance from the edge of the source that will re-enable mouse tracking
    * **Lock Sensitivity**: How close the tracking needs to get before it locks into position and stops tracking until you enter the follow border
    * **Auto Lock on reverse direction**: Automatically stop tracking if you reverse the direction of the mouse.
-   * **Set manual display position**: True to override the calculated x,y topleft position for the selected display
+   * **Set manual monitor position**: True to override the calculated x,y topleft position for the selected display
    * **X**: The coordinate of the left most pixel of the display
    * **Y**: The coordinate of the top most pixel of the display
    * **Width**: The width of the display in pixels
