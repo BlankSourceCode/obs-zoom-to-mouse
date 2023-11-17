@@ -47,7 +47,7 @@ Inspired by [tryptech](https://github.com/tryptech)'s [obs-zoom-and-follow](http
    * **Lock Sensitivity**: How close the tracking needs to get before it locks into position and stops tracking until you enter the follow border
    * **Auto Lock on reverse direction**: Automatically stop tracking if you reverse the direction of the mouse.
    * **Show all sources**: True to allow selecting any source as the Zoom Source - Note: You **MUST** set manual source position for non-display capture sources
-   * **Set manual source position**: True to override the calculated x/y (topleft position), width/height (size), and scaleX/scaleY (canvas scale factor) for the selected source
+   * **Set manual source position**: True to override the calculated x/y (topleft position), width/height (size), and scaleX/scaleY (canvas scale factor) for the selected source. This is essentially the area of the desktop that the selected zoom source represents. Usually the script can calculate this, but if you are using a non-display capture source, or if the script gets it wrong, you can manually set the values.
    * **X**: The coordinate of the left most pixel of the display
    * **Y**: The coordinate of the top most pixel of the display
    * **Width**: The width of the display in pixels
