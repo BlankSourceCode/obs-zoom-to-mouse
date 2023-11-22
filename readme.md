@@ -34,6 +34,8 @@ Inspired by [tryptech](https://github.com/tryptech)'s [obs-zoom-and-follow](http
    **Note:** If you don't use this form of setup for your display source (E.g. you have bounding box set to `No bounds` or you have a `Crop` set on the transform), the script will attempt to **automatically change your settings** to zoom compatible ones. 
    This may have undesired effects on your layout (or just not work at all).
 
+   **Note:** If you change your desktop display properties in Windows (such as moving a monitor, changing your primary display, updating the orientation of a display), you will need to re-add your display capture source in OBS for it to update the values that the script uses for its auto calculations.
+
 ## Usage
 1. You can customize the following settings in the OBS Scripts window:
    * **Zoom Source**: The display capture in the current scene to use for zooming

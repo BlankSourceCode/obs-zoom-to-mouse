@@ -182,13 +182,13 @@ function get_monitor_info(source)
                 end
             end
 
-            -- This works for my machine as the monitor names are given as "U2790B: 3840x2160 @ 0,0 (Primary Monitor)"
+            -- This works for my machine as the monitor names are given as "U2790B: 3840x2160 @ -1920,0 (Primary Monitor)"
             -- I don't know if this holds true for other machines and/or OBS versions
             -- TODO: Update this with some custom FFI calls to find the monitor top-left x and y coordinates if it doesn't work for anyone else
             -- TODO: Refactor this into something that would work with Windows/Linux/Mac assuming we can't do it like this
             if found then
                 log("Parsing display name: " .. found)
-                local x, y = found:match("(%d+),(%d+)")
+                local x, y = found:match("(-?%d+),(-?%d+)")
                 local width, height = found:match("(%d+)x(%d+)")
 
                 info = { x = 0, y = 0, width = 0, height = 0 }
@@ -856,8 +856,7 @@ function on_settings_modified(props, prop, settings)
         name == "monitor_override_h" or
         name == "monitor_override_sx" or
         name == "monitor_override_sy" then
-        local visible = obs.obs_data_get_bool(settings, "use_monitor_override")
-        if visible and source ~= nil then
+        if source ~= nil then
             monitor_info = get_monitor_info(source)
         end
         return name == "use_monitor_override"
@@ -964,8 +963,8 @@ function script_properties()
         "You MUST set manual source position for non-display capture sources")
 
     local override = obs.obs_properties_add_bool(props, "use_monitor_override", "Set manual source position")
-    local override_x = obs.obs_properties_add_int(props, "monitor_override_x", "X", 0, 10000, 1)
-    local override_y = obs.obs_properties_add_int(props, "monitor_override_y", "Y", 0, 10000, 1)
+    local override_x = obs.obs_properties_add_int(props, "monitor_override_x", "X", -10000, 10000, 1)
+    local override_y = obs.obs_properties_add_int(props, "monitor_override_y", "Y", -10000, 10000, 1)
     local override_w = obs.obs_properties_add_int(props, "monitor_override_w", "Width", 0, 10000, 1)
     local override_h = obs.obs_properties_add_int(props, "monitor_override_h", "Height", 0, 10000, 1)
     local override_sx = obs.obs_properties_add_float(props, "monitor_override_sx", "Scale X ", 0, 100, 0.01)
