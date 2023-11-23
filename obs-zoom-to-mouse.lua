@@ -74,12 +74,21 @@ if ffi.os == "Windows" then
         BOOL GetCursorPos(LPPOINT);
     ]])
     ppoint = ffi.new("POINT[1]")
+elseif ffi.os == "OSX" then
+    ffi.load("/Users/kieran/Documents/GitHub/obs-zoom-to-mouse/mouse_helper.dylib", true)
+    ffi.cdef([[
+        typedef struct {
+            double x;
+            double y;
+        } NSPoint;
+        NSPoint GetMouseLocation();
+    ]])
 end
 
 ---
 -- Get the current mouse position
 ---@return table Mouse position
-function get_mouse_pos()
+function get_mouse_pos(zoom)
     local mouse = { x = 0, y = 0 }
 
     -- TODO: Get the cursor position for Linux/Mac
@@ -88,8 +97,11 @@ function get_mouse_pos()
             mouse.x = ppoint[0].x
             mouse.y = ppoint[0].y
         end
+    elseif ffi.os == "OSX" then
+        local mousePos = ffi.C.GetMouseLocation()
+        mouse.x = mousePos.x
+        mouse.y = zoom.source_size.height - mousePos.y
     end
-
     return mouse
 end
 
@@ -558,7 +570,7 @@ end
 ---@param zoom any
 ---@return table
 function get_target_position(zoom)
-    local mouse = get_mouse_pos()
+    local mouse = get_mouse_pos(zoom)
 
     -- If we have monitor information then we can offset the mouse by the top-left of the monitor position
     -- This is because the display-capture source assumes top-left is 0,0 but the mouse uses the total desktop area,
@@ -1121,7 +1133,7 @@ function populate_zoom_sources(list)
     if sources ~= nil then
         for _, source in ipairs(sources) do
             local source_type = obs.obs_source_get_id(source)
-            if source_type == "monitor_capture" or allow_all_sources then
+            if source_type == "monitor_capture" or source_type == "screen_capture" or allow_all_sources then
                 local name = obs.obs_source_get_name(source)
                 obs.obs_property_list_add_string(list, name, name)
             end
