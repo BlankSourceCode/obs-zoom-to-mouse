@@ -62,6 +62,9 @@ local ZoomState = {
 }
 local zoom_state = ZoomState.None
 
+local version = obs.obs_get_version_string()
+local major = tonumber(version:match("(%d+%.%d+)")) or 0
+
 -- Define the GetCursorPos function for Windows
 -- TODO: Figure out how to do this for Linux/Mac
 if ffi.os == "Windows" then
@@ -166,46 +169,54 @@ end
 ---@return table|nil monitor_info The monitor size/top-left point
 function get_monitor_info(source)
     local info = nil
-    local props = obs.obs_source_properties(source)
-    if props ~= nil then
-        local monitor_id_prop = obs.obs_properties_get(props, "monitor_id")
-        if monitor_id_prop then
-            local to_match = obs.obs_data_get_string(obs.obs_source_get_settings(source), "monitor_id")
-            local found = nil
-            local item_count = obs.obs_property_list_item_count(monitor_id_prop);
-            for i = 0, item_count do
-                local name = obs.obs_property_list_item_name(monitor_id_prop, i)
-                local value = obs.obs_property_list_item_string(monitor_id_prop, i)
-                if value == to_match then
-                    found = name
-                    break
+
+    -- Only do the expensive look up if we are using automatic calculations on a display source
+    if is_display_capture(source) and not use_monitor_override then
+        local props = obs.obs_source_properties(source)
+        if props ~= nil then
+            local monitor_id_prop = obs.obs_properties_get(props, "monitor_id")
+            if monitor_id_prop then
+                local to_match = obs.obs_data_get_string(obs.obs_source_get_settings(source), "monitor_id")
+                local found = nil
+                local settings = obs.obs_source_get_settings(source)
+                if settings ~= nil then
+                    local item_count = obs.obs_property_list_item_count(monitor_id_prop);
+                    for i = 0, item_count do
+                        local name = obs.obs_property_list_item_name(monitor_id_prop, i)
+                        local value = obs.obs_property_list_item_string(monitor_id_prop, i)
+                        if value == to_match then
+                            found = name
+                            break
+                        end
+                    end
+                    obs.obs_data_release(settings)
+                end
+
+                -- This works for my machine as the monitor names are given as "U2790B: 3840x2160 @ -1920,0 (Primary Monitor)"
+                -- I don't know if this holds true for other machines and/or OBS versions
+                -- TODO: Update this with some custom FFI calls to find the monitor top-left x and y coordinates if it doesn't work for anyone else
+                -- TODO: Refactor this into something that would work with Windows/Linux/Mac assuming we can't do it like this
+                if found then
+                    log("Parsing display name: " .. found)
+                    local x, y = found:match("(-?%d+),(-?%d+)")
+                    local width, height = found:match("(%d+)x(%d+)")
+
+                    info = { x = 0, y = 0, width = 0, height = 0 }
+                    info.x = tonumber(x, 10)
+                    info.y = tonumber(y, 10)
+                    info.width = tonumber(width, 10)
+                    info.height = tonumber(height, 10)
+
+                    log("Parsed the following display information\n" .. format_table(info))
+
+                    if info.width == 0 and info.height == 0 then
+                        info = nil
+                    end
                 end
             end
 
-            -- This works for my machine as the monitor names are given as "U2790B: 3840x2160 @ -1920,0 (Primary Monitor)"
-            -- I don't know if this holds true for other machines and/or OBS versions
-            -- TODO: Update this with some custom FFI calls to find the monitor top-left x and y coordinates if it doesn't work for anyone else
-            -- TODO: Refactor this into something that would work with Windows/Linux/Mac assuming we can't do it like this
-            if found then
-                log("Parsing display name: " .. found)
-                local x, y = found:match("(-?%d+),(-?%d+)")
-                local width, height = found:match("(%d+)x(%d+)")
-
-                info = { x = 0, y = 0, width = 0, height = 0 }
-                info.x = tonumber(x, 10)
-                info.y = tonumber(y, 10)
-                info.width = tonumber(width, 10)
-                info.height = tonumber(height, 10)
-
-                log("Parsed the following display information\n" .. format_table(info))
-
-                if info.width == 0 and info.height == 0 then
-                    info = nil
-                end
-            end
+            obs.obs_properties_destroy(props)
         end
-
-        obs.obs_properties_destroy(props)
     end
 
     if use_monitor_override then
@@ -225,6 +236,27 @@ function get_monitor_info(source)
     end
 
     return info
+end
+
+---
+-- Check to see if the specified source is a display capture source
+-- If the source_to_check is nil then the answer will be false
+---@param source_to_check any The source to check
+---@return boolean result True if source is a display capture, false if it nil or some other source type
+function is_display_capture(source_to_check)
+    if source_to_check ~= nil then
+        -- Do a quick check to ensure this is a display capture
+        if allow_all_sources then
+            local source_type = obs.obs_source_get_id(source_to_check)
+            if source_type == "monitor_capture" then
+                return true
+            end
+        else
+            return true
+        end
+    end
+
+    return false
 end
 
 ---
@@ -290,6 +322,13 @@ function refresh_sceneitem(find_newest)
     if find_newest then
         -- Release the current sceneitem now that we are replacing it
         release_sceneitem()
+
+        -- Quit early if we are using no zoom source
+        -- This allows users to reset the crop data back to the original,
+        -- update it, and then force the conversion to happen by re-selecting it.
+        if source_name == "obs-zoom-to-mouse-none" then
+            return
+        end
 
         -- Get a matching source we can use for zooming in the current scene
         log("Finding sceneitem for Zoom Source '" .. source_name .. "'")
@@ -360,19 +399,15 @@ function refresh_sceneitem(find_newest)
         end
     end
 
-    local is_non_display_capture = false
-    if source ~= nil then
-        -- Do a quick check to ensure this is a display capture
-        if allow_all_sources then
-            local source_type = obs.obs_source_get_id(source)
-            if source_type ~= "monitor_capture" then
-                is_non_display_capture = true
+    if not monitor_info then
+        monitor_info = get_monitor_info(source)
+    end
 
-                if not use_monitor_override then
-                    log("ERROR: Selected Zoom Source is not a display capture source.\n" ..
-                        "       You MUST enable 'Set manual source position' and set the correct override values for size and position.")
-                end
-            end
+    local is_non_display_capture = not is_display_capture(source)
+    if is_non_display_capture then
+        if not use_monitor_override then
+            log("ERROR: Selected Zoom Source is not a display capture source.\n" ..
+                "       You MUST enable 'Set manual source position' and set the correct override values for size and position.")
         end
     end
 
@@ -482,6 +517,8 @@ function refresh_sceneitem(find_newest)
         -- If the user has a transform crop set, we need to convert it into a crop filter so that it works correctly with zooming
         -- Ideally the user does this manually and uses a crop filter instead of the transfrom crop because this might not work 100% of the time
         if not found_crop_filter and (sceneitem_crop_orig.left ~= 0 or sceneitem_crop_orig.top ~= 0 or sceneitem_crop_orig.right ~= 0 or sceneitem_crop_orig.bottom ~= 0) then
+            log("Creating new crop filter")
+
             -- Update the source size
             source_width = source_width - (sceneitem_crop_orig.left + sceneitem_crop_orig.right)
             source_height = source_height - (sceneitem_crop_orig.top + sceneitem_crop_orig.bottom)
@@ -814,8 +851,16 @@ function set_crop_settings(crop)
     end
 end
 
+function on_transition_start(t)
+    log("Transition started")
+    -- We need to remove the crop from the sceneitem as the transition starts to avoid
+    -- a delay with the rendering where you see the old crop and jump to the new one
+    release_sceneitem()
+end
+
 function on_frontend_event(event)
     if event == obs.OBS_FRONTEND_EVENT_SCENE_CHANGED then
+        log("Scene changed")
         -- If the scene changes we attempt to find a new source with the same name in this new scene
         -- TODO: There probably needs to be a way for users to specify what source they want to use in each scene
         refresh_sceneitem(true)
@@ -840,29 +885,18 @@ function on_settings_modified(props, prop, settings)
         obs.obs_property_set_visible(obs.obs_properties_get(props, "monitor_override_h"), visible)
         obs.obs_property_set_visible(obs.obs_properties_get(props, "monitor_override_sx"), visible)
         obs.obs_property_set_visible(obs.obs_properties_get(props, "monitor_override_sy"), visible)
+        return true
+    elseif name == "allow_all_sources" then
+        local sources_list = obs.obs_properties_get(props, "source")
+        populate_zoom_sources(sources_list)
+        return true
     elseif name == "debug_logs" then
         if obs.obs_data_get_bool(settings, "debug_logs") then
             log_current_settings()
         end
-    elseif name == "allow_all_sources" then
-        local sources_list = obs.obs_properties_get(props, "source")
-        populate_zoom_sources(sources_list)
     end
 
-    if name == "use_monitor_override" or
-        name == "monitor_override_x" or
-        name == "monitor_override_y" or
-        name == "monitor_override_w" or
-        name == "monitor_override_h" or
-        name == "monitor_override_sx" or
-        name == "monitor_override_sy" then
-        if source ~= nil then
-            monitor_info = get_monitor_info(source)
-        end
-        return name == "use_monitor_override"
-    end
-
-    return true
+    return false
 end
 
 ---
@@ -885,6 +919,7 @@ function log_current_settings()
         debug_logs = debug_logs
     }
 
+    log("OBS Version: " .. string.format("%.1f", major))
     log("Current settings:")
     log(format_table(settings))
 end
@@ -896,7 +931,6 @@ function on_print_help()
         "----------------------------------------------------\n" ..
         "This script will zoom the selected display-capture source to focus on the mouse\n\n" ..
         "Zoom Source: The display capture in the current scene to use for zooming\n" ..
-        "Force transform update: Refresh the internal zoom data if you manually change the transform/filters on your zoom source\n" ..
         "Zoom Factor: How much to zoom in by\n" ..
         "Zoom Speed: The speed of the zoom in/out animation\n" ..
         "Auto follow mouse: True to track the cursor while you are zoomed in\n" ..
@@ -932,37 +966,43 @@ function script_properties()
 
     populate_zoom_sources(sources_list)
 
-    obs.obs_properties_add_button(props, "refresh", "Refresh zoom sources",
+    local refresh_sources = obs.obs_properties_add_button(props, "refresh", "Refresh zoom sources",
         function()
             populate_zoom_sources(sources_list)
+            monitor_info = get_monitor_info(source)
             return true
         end)
-
-    -- This button is used to recalculate the sceneitem and all the transform/crop values
-    -- The idea being that if the user moves around the display capture source in their scene layout,
-    -- they have a way to reset the zoom settings for the new info
-    -- We could potentially do this automatically by listening to a bunch of events to see if anything changes
-    -- but this is easier
-    local force = obs.obs_properties_add_button(props, "update_transform", "Force transform update", on_update_transform)
-    obs.obs_property_set_long_description(force,
-        "Click to refresh the internal zoom data if you manually change the transform/filters on your zoom source")
+    obs.obs_property_set_long_description(refresh_sources,
+        "Click to re-populate Zoom Sources dropdown with available sources")
 
     -- Add the rest of the settings UI
     local zoom = obs.obs_properties_add_float(props, "zoom_value", "Zoom Factor", 1, 5, 0.5)
     local zoom_speed = obs.obs_properties_add_float_slider(props, "zoom_speed", "Zoom Speed", 0.01, 1, 0.01)
-    local follow = obs.obs_properties_add_bool(props, "follow", "Auto follow mouse")
-    local follow_outside_bounds = obs.obs_properties_add_bool(props, "follow_outside_bounds", "Follow outside bounds")
+    local follow = obs.obs_properties_add_bool(props, "follow", "Auto follow mouse ")
+    obs.obs_property_set_long_description(follow,
+        "When enabled mouse traking will auto-start when zoomed in without waiting for tracking toggle hotkey")
+
+    local follow_outside_bounds = obs.obs_properties_add_bool(props, "follow_outside_bounds", "Follow outside bounds ")
+    obs.obs_property_set_long_description(follow_outside_bounds,
+        "When enabled the mouse will be tracked even when the cursor is outside the bounds of the zoom source")
+
     local follow_speed = obs.obs_properties_add_float_slider(props, "follow_speed", "Follow Speed", 0.01, 1, 0.01)
     local follow_border = obs.obs_properties_add_int_slider(props, "follow_border", "Follow Border", 0, 50, 1)
     local safezone_sense = obs.obs_properties_add_int_slider(props,
         "follow_safezone_sensitivity", "Lock Sensitivity", 1, 20, 1)
-    local follow_auto_lock = obs.obs_properties_add_bool(props, "follow_auto_lock", "Auto Lock on reverse direction")
+    local follow_auto_lock = obs.obs_properties_add_bool(props, "follow_auto_lock", "Auto Lock on reverse direction ")
+    obs.obs_property_set_long_description(follow_auto_lock,
+        "When enabled moving the mouse to edge of the zoom source will begin tracking,\n" ..
+        "but moving back towards the center will stop tracking simliar to panning the camera in a RTS game")
 
     local allow_all = obs.obs_properties_add_bool(props, "allow_all_sources", "Allow any zoom source ")
     obs.obs_property_set_long_description(allow_all, "Enable to allow selecting any source as the Zoom Source\n" ..
         "You MUST set manual source position for non-display capture sources")
 
-    local override = obs.obs_properties_add_bool(props, "use_monitor_override", "Set manual source position")
+    local override = obs.obs_properties_add_bool(props, "use_monitor_override", "Set manual source position ")
+    obs.obs_property_set_long_description(override,
+        "When enabled the specified size/position settings will be used for the zoom source instead of the auto-calculated ones")
+
     local override_x = obs.obs_properties_add_int(props, "monitor_override_x", "X", -10000, 10000, 1)
     local override_y = obs.obs_properties_add_int(props, "monitor_override_y", "Y", -10000, 10000, 1)
     local override_w = obs.obs_properties_add_int(props, "monitor_override_w", "Width", 0, 10000, 1)
@@ -974,8 +1014,13 @@ function script_properties()
     obs.obs_property_set_long_description(override_sy, "Usually 1 - unless you are using a scaled source")
 
     -- Add a button for more information
-    obs.obs_properties_add_button(props, "help_button", "More Info", on_print_help)
-    local debug = obs.obs_properties_add_bool(props, "debug_logs", "Enable debug logging")
+    local help = obs.obs_properties_add_button(props, "help_button", "More Info", on_print_help)
+    obs.obs_property_set_long_description(help,
+        "Click to show help information (via the script log)")
+
+    local debug = obs.obs_properties_add_bool(props, "debug_logs", "Enable debug logging ")
+    obs.obs_property_set_long_description(debug,
+        "When enabled the script will output diagnostics messages to the script log (useful for debugging/github issues)")
 
     obs.obs_property_set_visible(override_x, use_monitor_override)
     obs.obs_property_set_visible(override_y, use_monitor_override)
@@ -983,12 +1028,6 @@ function script_properties()
     obs.obs_property_set_visible(override_h, use_monitor_override)
     obs.obs_property_set_visible(override_sx, use_monitor_override)
     obs.obs_property_set_visible(override_sy, use_monitor_override)
-    obs.obs_property_set_modified_callback(override_x, on_settings_modified)
-    obs.obs_property_set_modified_callback(override_y, on_settings_modified)
-    obs.obs_property_set_modified_callback(override_w, on_settings_modified)
-    obs.obs_property_set_modified_callback(override_h, on_settings_modified)
-    obs.obs_property_set_modified_callback(override_sx, on_settings_modified)
-    obs.obs_property_set_modified_callback(override_sy, on_settings_modified)
     obs.obs_property_set_modified_callback(override, on_settings_modified)
     obs.obs_property_set_modified_callback(allow_all, on_settings_modified)
     obs.obs_property_set_modified_callback(debug, on_settings_modified)
@@ -1039,14 +1078,37 @@ function script_load(settings)
     if debug_logs then
         log_current_settings()
     end
+
+    -- Add the transition_start event handlers to each transition (the global source_transition_start event never fires)
+    local transitions = obs.obs_frontend_get_transitions()
+    if transitions ~= nil then
+        for i, s in pairs(transitions) do
+            local name = obs.obs_source_get_name(s)
+            log("Adding transition_start listener to " .. name)
+            local handler = obs.obs_source_get_signal_handler(s)
+            obs.signal_handler_connect(handler, "transition_start", on_transition_start)
+        end
+        obs.source_list_release(transitions)
+    end
 end
 
 function script_unload()
     -- Clean up the memory usage
-    obs.obs_hotkey_unregister(on_toggle_zoom)
-    obs.obs_hotkey_unregister(on_toggle_follow)
-    obs.obs_frontend_remove_event_callback(on_frontend_event)
-    release_sceneitem()
+    if major > 29.0 then
+        local transitions = obs.obs_frontend_get_transitions()
+        if transitions ~= nil then
+            for i, s in pairs(transitions) do
+                local handler = obs.obs_source_get_signal_handler(s)
+                obs.signal_handler_disconnect(handler, "transition_start", on_transition_start)
+            end
+            obs.source_list_release(transitions)
+        end
+
+        obs.obs_hotkey_unregister(on_toggle_zoom)
+        obs.obs_hotkey_unregister(on_toggle_follow)
+        obs.obs_frontend_remove_event_callback(on_frontend_event)
+        release_sceneitem()
+    end
 end
 
 function script_defaults(settings)
@@ -1087,6 +1149,13 @@ end
 
 function script_update(settings)
     local old_source_name = source_name
+    local old_override = use_monitor_override
+    local old_x = monitor_override_x
+    local old_y = monitor_override_y
+    local old_w = monitor_override_w
+    local old_h = monitor_override_h
+    local old_sx = monitor_override_sx
+    local old_sy = monitor_override_sy
 
     -- Update the settings
     source_name = obs.obs_data_get_string(settings, "source")
@@ -1112,6 +1181,18 @@ function script_update(settings)
     if source_name ~= old_source_name then
         refresh_sceneitem(true)
     end
+
+    -- Update the monitor_info if the settings changed
+    if source_name ~= old_source_name or
+        use_monitor_override ~= old_override or
+        monitor_override_x ~= old_x or
+        monitor_override_y ~= old_y or
+        monitor_override_w ~= old_w or
+        monitor_override_h ~= old_h or
+        monitor_override_sx ~= old_sx or
+        monitor_override_sy ~= old_sy then
+        monitor_info = get_monitor_info(source)
+    end
 end
 
 function populate_zoom_sources(list)
@@ -1119,6 +1200,7 @@ function populate_zoom_sources(list)
 
     local sources = obs.obs_enum_sources()
     if sources ~= nil then
+        obs.obs_property_list_add_string(list, "<None>", "obs-zoom-to-mouse-none")
         for _, source in ipairs(sources) do
             local source_type = obs.obs_source_get_id(source)
             if source_type == "monitor_capture" or allow_all_sources then
