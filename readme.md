@@ -49,12 +49,14 @@ Inspired by [tryptech](https://github.com/tryptech)'s [obs-zoom-and-follow](http
    * **Auto Lock on reverse direction**: Automatically stop tracking if you reverse the direction of the mouse.
    * **Show all sources**: True to allow selecting any source as the Zoom Source - Note: You **MUST** set manual source position for non-display capture sources
    * **Set manual source position**: True to override the calculated x/y (topleft position), width/height (size), and scaleX/scaleY (canvas scale factor) for the selected source. This is essentially the area of the desktop that the selected zoom source represents. Usually the script can calculate this, but if you are using a non-display capture source, or if the script gets it wrong, you can manually set the values.
-   * **X**: The coordinate of the left most pixel of the display
-   * **Y**: The coordinate of the top most pixel of the display
-   * **Width**: The width of the display in pixels
-   * **Height**: The height of the display in pixels
+   * **X**: The coordinate of the left most pixel of the source
+   * **Y**: The coordinate of the top most pixel of the source
+   * **Width**: The width of the source (in pixels)
+   * **Height**: The height of the source (in pixels)
    * **Scale X**: The x scale factor to apply to the mouse position if the source is not 1:1 pixel size (normally left as 1, but useful for cloned sources that have been scaled)
    * **Scale Y**: The y scale factor to apply to the mouse position if the source is not 1:1 pixel size (normally left as 1, but useful for cloned sources that have been scaled)
+   * **Monitor Width**: The width of the monitor that is showing the source (in pixels)
+   * **Monitor Height**: The height of the monitor that is showing the source (in pixels)
    * **More Info**: Show this text in the script log
    * **Enable debug logging**: Show additional debug information in the script log
 
@@ -103,8 +105,9 @@ I don't know of an easy way of getting these values automatically otherwise I wo
 Note: If you are also using a `transform crop` on the non-display capture source, you will need to manually convert it to a `Crop/Pad Filter` instead (the script has trouble trying to auto convert it for you for non-display sources).
 
 ## Known Limitations
-* Currently this script only works on **Windows**
+* Currently this script is only tested on **Windows**
    * Internally it uses [FFI](https://luajit.org/ext_ffi.html) to get the mouse position by loading the Win32 `GetCursorPos()` function
+   * You can now try out support for **Linux** and **Mac** using the latest version of the script (they have their own [FFI](https://luajit.org/ext_ffi.html) defines for getting the mouse position)
 
 * Only works on `Display Capture` sources (automatically)
    * In theory it should be able to work on window captures too, if there was a way to get the mouse position relative to that specific window

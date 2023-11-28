@@ -35,7 +35,14 @@ local locked_last_pos = nil
 local hotkey_zoom_id = nil
 local hotkey_follow_id = nil
 local is_timer_running = false
-local ppoint = nil
+
+local win_point = nil
+local x11_display = nil
+local x11_root = nil
+local x11_mouse = nil
+local osx_lib = nil
+local osx_nsevent = nil
+local osx_mouse_location = nil
 
 local use_auto_follow_mouse = true
 local use_follow_outside_bounds = false
@@ -52,6 +59,10 @@ local monitor_override_x = 0
 local monitor_override_y = 0
 local monitor_override_w = 0
 local monitor_override_h = 0
+local monitor_override_sx = 0
+local monitor_override_sy = 0
+local monitor_override_dw = 0
+local monitor_override_dh = 0
 local debug_logs = false
 
 local ZoomState = {
@@ -65,8 +76,7 @@ local zoom_state = ZoomState.None
 local version = obs.obs_get_version_string()
 local major = tonumber(version:match("(%d+%.%d+)")) or 0
 
--- Define the GetCursorPos function for Windows
--- TODO: Figure out how to do this for Linux/Mac
+-- Define the mouse cursor functions for each platform
 if ffi.os == "Windows" then
     ffi.cdef([[
         typedef int BOOL;
@@ -76,7 +86,76 @@ if ffi.os == "Windows" then
         } POINT, *LPPOINT;
         BOOL GetCursorPos(LPPOINT);
     ]])
-    ppoint = ffi.new("POINT[1]")
+    win_point = ffi.new("POINT[1]")
+elseif ffi.os == "Linux" then
+    ffi.cdef([[
+        typedef unsigned long XID;
+        typedef XID Window;
+        typedef void Display;
+        Display* XOpenDisplay(char*);
+        XID XDefaultRootWindow(Display *display);
+        int XQueryPointer(Display*, Window, Window*, Window*, int*, int*, int*, int*, unsigned int*);
+        int XCloseDisplay(Display*);
+    ]])
+
+    x11_lib = ffi.load("X11.so.6")
+    x11_display = x11_lib.XOpenDisplay(nil)
+    if x11_display ~= nil then
+        x11_root = x11_lib.XDefaultRootWindow(x11_display)
+        x11_mouse = {
+            root_win = ffi.new("Window[1]"),
+            child_win = ffi.new("Window[1]"),
+            root_x = ffi.new("int[1]"),
+            root_y = ffi.new("int[1]"),
+            win_x = ffi.new("int[1]"),
+            win_y = ffi.new("int[1]"),
+            mask = ffi.new("unsigned int[1]")
+        }
+    end
+elseif ffi.os == "OSX" then
+    ffi.cdef([[
+        typedef struct {
+            double x;
+            double y;
+        } CGPoint;
+        typedef void* SEL;
+        typedef void* id;
+        typedef void* Method;
+
+        SEL sel_registerName(const char *str);
+        id objc_getClass(const char*);
+        Method class_getClassMethod(id cls, SEL name);
+        void* method_getImplementation(Method);
+        int access(const char *path, int amode);
+    ]])
+
+    local framework = "AppKit"
+    local frameworkSearchPaths = {
+        "/System/Library/Frameworks/%s.framework/%s",
+        "/Library/Frameworks/%s.framework/%s",
+        "~/Library/Frameworks/%s.framework/%s"
+    }
+
+    -- Find the OSX lib to load
+    for i, path in pairs(frameworkSearchPaths) do
+        path = path:format(framework, framework)
+        if ffi.C.access(path, 4) == 0 then
+            osx_lib = ffi.load(path, true)
+            break
+        end
+    end
+
+    if osx_lib ~= nil then
+        osx_nsevent = {
+            class = osx_lib.objc_getClass("NSEvent"),
+            sel = osx_lib.sel_registerName("mouseLocation")
+        }
+        local method = osx_lib.class_getClassMethod(osx_nsevent.class, osx_nsevent.sel)
+        if method ~= nil then
+            local imp = osx_lib.method_getImplementation(method)
+            osx_mouse_location = ffi.cast("CGPoint(*)(void*, void*)", imp)
+        end
+    end
 end
 
 ---
@@ -85,15 +164,68 @@ end
 function get_mouse_pos()
     local mouse = { x = 0, y = 0 }
 
-    -- TODO: Get the cursor position for Linux/Mac
     if ffi.os == "Windows" then
-        if ppoint and ffi.C.GetCursorPos(ppoint) ~= 0 then
-            mouse.x = ppoint[0].x
-            mouse.y = ppoint[0].y
+        if win_point and ffi.C.GetCursorPos(win_point) ~= 0 then
+            mouse.x = win_point[0].x
+            mouse.y = win_point[0].y
+        end
+    elseif ffi.os == "Linux" then
+        if x11_lib ~= nil and x11_display ~= nil and x11_root ~= nil and x11_mouse ~= nil then
+            if x11_lib.XQueryPointer(x11_display, x11_root, x11_mouse.root_win, x11_mouse.child_win, x11_mouse.root_x, x11_mouse.root_y, x11_mouse.win_x, x11_mouse.win_y, x11_mouse.mask) ~= 0 then
+                mouse.x = tonumber(x11_mouse.win_x[0])
+                mouse.y = tonumber(x11_mouse.win_y[0])
+            end
+        end
+    elseif ffi.os == "OSX" then
+        if osx_lib ~= nil and osx_nsevent ~= nil and osx_mouse_location ~= nil then
+            local point = osx_mouse_location(osx_nsevent.class, osx_nsevent.sel)
+            mouse.x = point.x
+            if monitor_info ~= nil then
+                if monitor_info.display_height > 0 then
+                    mouse.y = monitor_info.display_height - point.y
+                else
+                    mouse.y = monitor_info.height - point.y
+                end
+            end
         end
     end
 
     return mouse
+end
+
+---
+-- Get the information about display capture sources for the current platform
+---@return any
+function get_dc_info()
+    if ffi.os == "Windows" then
+        return {
+            source_id = "monitor_capture",
+            prop_id = "monitor_id",
+            prop_type = "string"
+        }
+    elseif ffi.os == "Linux" then
+        return {
+            source_id = "xshm_input",
+            prop_id = "screen",
+            prop_type = "int"
+        }
+    elseif ffi.os == "OSX" then
+        if major > 29.1 then
+            return {
+                source_id = "display_capture",
+                prop_id = "display_uuid",
+                prop_type = "string"
+            }
+        else
+            return {
+                source_id = "display_capture",
+                prop_id = "display",
+                prop_type = "int"
+            }
+        end
+    end
+
+    return nil
 end
 
 ---
@@ -172,50 +304,69 @@ function get_monitor_info(source)
 
     -- Only do the expensive look up if we are using automatic calculations on a display source
     if is_display_capture(source) and not use_monitor_override then
-        local props = obs.obs_source_properties(source)
-        if props ~= nil then
-            local monitor_id_prop = obs.obs_properties_get(props, "monitor_id")
-            if monitor_id_prop then
-                local to_match = obs.obs_data_get_string(obs.obs_source_get_settings(source), "monitor_id")
-                local found = nil
-                local settings = obs.obs_source_get_settings(source)
-                if settings ~= nil then
-                    local item_count = obs.obs_property_list_item_count(monitor_id_prop);
-                    for i = 0, item_count do
-                        local name = obs.obs_property_list_item_name(monitor_id_prop, i)
-                        local value = obs.obs_property_list_item_string(monitor_id_prop, i)
-                        if value == to_match then
-                            found = name
-                            break
+        local dc_info = get_dc_info()
+        if dc_info ~= nil then
+            local props = obs.obs_source_properties(source)
+            if props ~= nil then
+                local monitor_id_prop = obs.obs_properties_get(props, dc_info.prop_id)
+                if monitor_id_prop then
+                    local found = nil
+                    local settings = obs.obs_source_get_settings(source)
+                    if settings ~= nil then
+                        local to_match
+                        if dc_info.prop_type == "string" then
+                            to_match = obs.obs_data_get_string(settings, dc_info.prop_id)
+                        elseif dc_info.prop_type == "int" then
+                            to_match = obs.obs_data_get_int(settings, dc_info.prop_id)
+                        end
+
+                        local item_count = obs.obs_property_list_item_count(monitor_id_prop);
+                        for i = 0, item_count do
+                            local name = obs.obs_property_list_item_name(monitor_id_prop, i)
+                            local value
+                            if dc_info.prop_type == "string" then
+                                value = obs.obs_property_list_item_string(monitor_id_prop, i)
+                            elseif dc_info.prop_type == "int" then
+                                value = obs.obs_property_list_item_int(monitor_id_prop, i)
+                            end
+
+                            if value == to_match then
+                                found = name
+                                break
+                            end
+                        end
+                        obs.obs_data_release(settings)
+                    end
+
+                    -- This works for my machine as the monitor names are given as "U2790B: 3840x2160 @ -1920,0 (Primary Monitor)"
+                    -- I don't know if this holds true for other machines and/or OBS versions
+                    -- TODO: Update this with some custom FFI calls to find the monitor top-left x and y coordinates if it doesn't work for anyone else
+                    -- TODO: Refactor this into something that would work with Windows/Linux/Mac assuming we can't do it like this
+                    if found then
+                        log("Parsing display name: " .. found)
+                        local x, y = found:match("(-?%d+),(-?%d+)")
+                        local width, height = found:match("(%d+)x(%d+)")
+
+                        info = { x = 0, y = 0, width = 0, height = 0 }
+                        info.x = tonumber(x, 10)
+                        info.y = tonumber(y, 10)
+                        info.width = tonumber(width, 10)
+                        info.height = tonumber(height, 10)
+                        info.scale_x = 1
+                        info.scale_y = 1
+                        info.display_width = info.width
+                        info.display_height = info.height
+
+                        log("Parsed the following display information\n" .. format_table(info))
+
+                        if info.width == 0 and info.height == 0 then
+                            info = nil
                         end
                     end
-                    obs.obs_data_release(settings)
                 end
 
-                -- This works for my machine as the monitor names are given as "U2790B: 3840x2160 @ -1920,0 (Primary Monitor)"
-                -- I don't know if this holds true for other machines and/or OBS versions
-                -- TODO: Update this with some custom FFI calls to find the monitor top-left x and y coordinates if it doesn't work for anyone else
-                -- TODO: Refactor this into something that would work with Windows/Linux/Mac assuming we can't do it like this
-                if found then
-                    log("Parsing display name: " .. found)
-                    local x, y = found:match("(-?%d+),(-?%d+)")
-                    local width, height = found:match("(%d+)x(%d+)")
-
-                    info = { x = 0, y = 0, width = 0, height = 0 }
-                    info.x = tonumber(x, 10)
-                    info.y = tonumber(y, 10)
-                    info.width = tonumber(width, 10)
-                    info.height = tonumber(height, 10)
-
-                    log("Parsed the following display information\n" .. format_table(info))
-
-                    if info.width == 0 and info.height == 0 then
-                        info = nil
-                    end
-                end
+                obs.obs_properties_destroy(props)
             end
-
-            obs.obs_properties_destroy(props)
         end
     end
 
@@ -226,7 +377,9 @@ function get_monitor_info(source)
             width = monitor_override_w,
             height = monitor_override_h,
             scale_x = monitor_override_sx,
-            scale_y = monitor_override_sy
+            scale_y = monitor_override_sy,
+            display_width = monitor_override_dw,
+            display_height = monitor_override_dh
         }
     end
 
@@ -245,14 +398,17 @@ end
 ---@return boolean result True if source is a display capture, false if it nil or some other source type
 function is_display_capture(source_to_check)
     if source_to_check ~= nil then
-        -- Do a quick check to ensure this is a display capture
-        if allow_all_sources then
-            local source_type = obs.obs_source_get_id(source_to_check)
-            if source_type == "monitor_capture" then
+        local dc_info = get_dc_info()
+        if dc_info ~= nil then
+            -- Do a quick check to ensure this is a display capture
+            if allow_all_sources then
+                local source_type = obs.obs_source_get_id(source_to_check)
+                if source_type == dc_info.source_id then
+                    return true
+                end
+            else
                 return true
             end
-        else
-            return true
         end
     end
 
@@ -885,6 +1041,8 @@ function on_settings_modified(props, prop, settings)
         obs.obs_property_set_visible(obs.obs_properties_get(props, "monitor_override_h"), visible)
         obs.obs_property_set_visible(obs.obs_properties_get(props, "monitor_override_sx"), visible)
         obs.obs_property_set_visible(obs.obs_properties_get(props, "monitor_override_sy"), visible)
+        obs.obs_property_set_visible(obs.obs_properties_get(props, "monitor_override_dw"), visible)
+        obs.obs_property_set_visible(obs.obs_properties_get(props, "monitor_override_dh"), visible)
         return true
     elseif name == "allow_all_sources" then
         local sources_list = obs.obs_properties_get(props, "source")
@@ -916,6 +1074,10 @@ function log_current_settings()
         monitor_override_y = monitor_override_y,
         monitor_override_w = monitor_override_w,
         monitor_override_h = monitor_override_h,
+        monitor_override_sx = monitor_override_sx,
+        monitor_override_sy = monitor_override_sy,
+        monitor_override_dw = monitor_override_dw,
+        monitor_override_dh = monitor_override_dh,
         debug_logs = debug_logs
     }
 
@@ -941,12 +1103,14 @@ function on_print_help()
         "Auto Lock on reverse direction: Automatically stop tracking if you reverse the direction of the mouse\n" ..
         "Show all sources: True to allow selecting any source as the Zoom Source - You MUST set manual source position for non-display capture sources\n" ..
         "Set manual source position: True to override the calculated x/y (topleft position), width/height (size), and scaleX/scaleY (canvas scale factor) for the selected source\n" ..
-        "X: The coordinate of the left most pixel of the display\n" ..
-        "Y: The coordinate of the top most pixel of the display\n" ..
-        "Width: The width of the display in pixels\n" ..
-        "Height: The height of the display in pixels\n" ..
+        "X: The coordinate of the left most pixel of the source\n" ..
+        "Y: The coordinate of the top most pixel of the source\n" ..
+        "Width: The width of the source (in pixels)\n" ..
+        "Height: The height of the source (in pixels)\n" ..
         "Scale X: The x scale factor to apply to the mouse position if the source size is not 1:1 (useful for cloned sources)\n" ..
         "Scale Y: The y scale factor to apply to the mouse position if the source size is not 1:1 (useful for cloned sources)\n" ..
+        "Monitor Width: The width of the monitor that is showing the source (in pixels)\n" ..
+        "Monitor Height: The height of the monitor that is showing the source (in pixels)\n" ..
         "More Info: Show this text in the script log\n" ..
         "Enable debug logging: Show additional debug information in the script log\n\n"
 
@@ -1009,9 +1173,13 @@ function script_properties()
     local override_h = obs.obs_properties_add_int(props, "monitor_override_h", "Height", 0, 10000, 1)
     local override_sx = obs.obs_properties_add_float(props, "monitor_override_sx", "Scale X ", 0, 100, 0.01)
     local override_sy = obs.obs_properties_add_float(props, "monitor_override_sy", "Scale Y ", 0, 100, 0.01)
+    local override_dw = obs.obs_properties_add_int(props, "monitor_override_dw", "Monitor Width ", 0, 10000, 1)
+    local override_dh = obs.obs_properties_add_int(props, "monitor_override_dh", "Monitor Height ", 0, 10000, 1)
 
     obs.obs_property_set_long_description(override_sx, "Usually 1 - unless you are using a scaled source")
     obs.obs_property_set_long_description(override_sy, "Usually 1 - unless you are using a scaled source")
+    obs.obs_property_set_long_description(override_dw, "X resolution of your montior")
+    obs.obs_property_set_long_description(override_dh, "Y resolution of your monitor")
 
     -- Add a button for more information
     local help = obs.obs_properties_add_button(props, "help_button", "More Info", on_print_help)
@@ -1028,6 +1196,8 @@ function script_properties()
     obs.obs_property_set_visible(override_h, use_monitor_override)
     obs.obs_property_set_visible(override_sx, use_monitor_override)
     obs.obs_property_set_visible(override_sy, use_monitor_override)
+    obs.obs_property_set_visible(override_dw, use_monitor_override)
+    obs.obs_property_set_visible(override_dh, use_monitor_override)
     obs.obs_property_set_modified_callback(override, on_settings_modified)
     obs.obs_property_set_modified_callback(allow_all, on_settings_modified)
     obs.obs_property_set_modified_callback(debug, on_settings_modified)
@@ -1071,6 +1241,8 @@ function script_load(settings)
     monitor_override_h = obs.obs_data_get_int(settings, "monitor_override_h")
     monitor_override_sx = obs.obs_data_get_double(settings, "monitor_override_sx")
     monitor_override_sy = obs.obs_data_get_double(settings, "monitor_override_sy")
+    monitor_override_dw = obs.obs_data_get_int(settings, "monitor_override_dw")
+    monitor_override_dh = obs.obs_data_get_int(settings, "monitor_override_dh")
     debug_logs = obs.obs_data_get_bool(settings, "debug_logs")
 
     obs.obs_frontend_add_event_callback(on_frontend_event)
@@ -1090,6 +1262,11 @@ function script_load(settings)
         end
         obs.source_list_release(transitions)
     end
+
+    if ffi.os == "Linux" and not x11_display then
+        log("ERROR: Could not get X11 Display for Linux\n" ..
+            "Mouse position will be incorrect.")
+    end
 end
 
 function script_unload()
@@ -1108,6 +1285,10 @@ function script_unload()
         obs.obs_hotkey_unregister(on_toggle_follow)
         obs.obs_frontend_remove_event_callback(on_frontend_event)
         release_sceneitem()
+    end
+
+    if x11_lib ~= nil and x11_display ~= nil then
+        x11_lib.XCloseDisplay(x11_display)
     end
 end
 
@@ -1129,6 +1310,8 @@ function script_defaults(settings)
     obs.obs_data_set_default_int(settings, "monitor_override_h", 1080)
     obs.obs_data_set_default_double(settings, "monitor_override_sx", 1)
     obs.obs_data_set_default_double(settings, "monitor_override_sy", 1)
+    obs.obs_data_set_default_int(settings, "monitor_override_dw", 1920)
+    obs.obs_data_set_default_int(settings, "monitor_override_dh", 1080)
     obs.obs_data_set_default_bool(settings, "debug_logs", false)
 end
 
@@ -1156,6 +1339,8 @@ function script_update(settings)
     local old_h = monitor_override_h
     local old_sx = monitor_override_sx
     local old_sy = monitor_override_sy
+    local old_dw = monitor_override_dw
+    local old_dh = monitor_override_dh
 
     -- Update the settings
     source_name = obs.obs_data_get_string(settings, "source")
@@ -1175,6 +1360,8 @@ function script_update(settings)
     monitor_override_h = obs.obs_data_get_int(settings, "monitor_override_h")
     monitor_override_sx = obs.obs_data_get_double(settings, "monitor_override_sx")
     monitor_override_sy = obs.obs_data_get_double(settings, "monitor_override_sy")
+    monitor_override_dw = obs.obs_data_get_int(settings, "monitor_override_dw")
+    monitor_override_dh = obs.obs_data_get_int(settings, "monitor_override_dh")
     debug_logs = obs.obs_data_get_bool(settings, "debug_logs")
 
     -- Only do the expensive refresh if the user selected a new source
@@ -1190,7 +1377,9 @@ function script_update(settings)
         monitor_override_w ~= old_w or
         monitor_override_h ~= old_h or
         monitor_override_sx ~= old_sx or
-        monitor_override_sy ~= old_sy then
+        monitor_override_sy ~= old_sy or
+        monitor_override_w ~= old_dw or
+        monitor_override_h ~= old_dh then
         monitor_info = get_monitor_info(source)
     end
 end
@@ -1200,10 +1389,11 @@ function populate_zoom_sources(list)
 
     local sources = obs.obs_enum_sources()
     if sources ~= nil then
+        local dc_info = get_dc_info()
         obs.obs_property_list_add_string(list, "<None>", "obs-zoom-to-mouse-none")
         for _, source in ipairs(sources) do
             local source_type = obs.obs_source_get_id(source)
-            if source_type == "monitor_capture" or allow_all_sources then
+            if source_type == dc_info.source_id or allow_all_sources then
                 local name = obs.obs_source_get_name(source)
                 obs.obs_property_list_add_string(list, name, name)
             end
