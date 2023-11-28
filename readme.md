@@ -39,7 +39,7 @@ Inspired by [tryptech](https://github.com/tryptech)'s [obs-zoom-and-follow](http
 ## Usage
 1. You can customize the following settings in the OBS Scripts window:
    * **Zoom Source**: The display capture in the current scene to use for zooming
-   * **Zoom Factor**: How much to zoom in by
+   * **Zoom Level**: How much to zoom in by
    * **Zoom Speed**: The speed of the zoom in/out animation
    * **Auto follow mouse**: True to track the cursor automatically while you are zoomed in, instead of waiting for the `Toggle follow` hotkey to be pressed first
    * **Follow outside bounds**: True to track the cursor even when it is outside the bounds of the source
