@@ -129,22 +129,7 @@ elseif ffi.os == "OSX" then
         int access(const char *path, int amode);
     ]])
 
-    local framework = "AppKit"
-    local frameworkSearchPaths = {
-        "/System/Library/Frameworks/%s.framework/%s",
-        "/Library/Frameworks/%s.framework/%s",
-        "~/Library/Frameworks/%s.framework/%s"
-    }
-
-    -- Find the OSX lib to load
-    for i, path in pairs(frameworkSearchPaths) do
-        path = path:format(framework, framework)
-        if ffi.C.access(path, 4) == 0 then
-            osx_lib = ffi.load(path, true)
-            break
-        end
-    end
-
+    osx_lib = ffi.load("libobjc")
     if osx_lib ~= nil then
         osx_nsevent = {
             class = osx_lib.objc_getClass("NSEvent"),
@@ -212,7 +197,7 @@ function get_dc_info()
     elseif ffi.os == "OSX" then
         if major > 29.1 then
             return {
-                source_id = "display_capture",
+                source_id = "screen_capture",
                 prop_id = "display_uuid",
                 prop_type = "string"
             }
@@ -549,8 +534,6 @@ function refresh_sceneitem(find_newest)
                     source = nil
                     return
                 end
-
-                monitor_info = get_monitor_info(source)
             end
         end
     end
