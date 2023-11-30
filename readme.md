@@ -6,6 +6,8 @@ I made this for my own use when recording videos as I wanted a way to zoom into 
 
 Built with OBS v29.1.3
 
+Now works on **Windows**, **Linux**, and **Mac**
+
 Inspired by [tryptech](https://github.com/tryptech)'s [obs-zoom-and-follow](https://github.com/tryptech/obs-zoom-and-follow)
 
 ## Example
@@ -105,13 +107,16 @@ I don't know of an easy way of getting these values automatically otherwise I wo
 Note: If you are also using a `transform crop` on the non-display capture source, you will need to manually convert it to a `Crop/Pad Filter` instead (the script has trouble trying to auto convert it for you for non-display sources).
 
 ## Known Limitations
-* Currently this script is only tested on **Windows**
-   * Internally it uses [FFI](https://luajit.org/ext_ffi.html) to get the mouse position by loading the Win32 `GetCursorPos()` function
-   * You can now try out support for **Linux** and **Mac** using the latest version of the script (they have their own [FFI](https://luajit.org/ext_ffi.html) defines for getting the mouse position)
-
 * Only works on `Display Capture` sources (automatically)
    * In theory it should be able to work on window captures too, if there was a way to get the mouse position relative to that specific window
    * You can now enable the [`Show all sources`](#More-information-on-'Show-All-Sources') option to select a non-display capture source, but you MUST set manual source position values
+
+* Using Linux:
+   * You may need to install the [loopback package](https://obsproject.com/forum/threads/obs-no-display-screen-capture-option.156314/) to enable `XSHM` display capture sources. This source acts most like the ones used by Windows and Mac so the script can auto calculate sizes for you.
+   * The script will also work with `Pipewire` sources, but you will need to enable `Allow any zoom source` and `Set manual source position` since the script cannot get the size by itself.
+
+* Using Mac:
+   * When using `Set manual source position` you may need to set the `Monitor Height` value as it is used to invert the Y coordinate of the mouse position so that it matches the values of Windows and Linux that the script expects.
 
 ## Development Setup
 * Clone this repo

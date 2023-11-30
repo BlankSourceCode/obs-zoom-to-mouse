@@ -6,7 +6,7 @@
 
 local obs = obslua
 local ffi = require("ffi")
-local VERSION = "1.0"
+local VERSION = "1.0.1"
 local CROP_FILTER_NAME = "obs-zoom-to-mouse-crop"
 
 local source_name = ""
@@ -1065,6 +1065,7 @@ function log_current_settings()
     }
 
     log("OBS Version: " .. string.format("%.1f", major))
+    log("Script Version: " .. VERSION)
     log("Current settings:")
     log(format_table(settings))
 end
