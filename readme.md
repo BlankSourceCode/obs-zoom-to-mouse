@@ -124,4 +124,8 @@ Note: If you are also using a `transform crop` on the non-display capture source
 * Click `Reload Scripts` in the OBS Scripts window
 
 ##
-And to anyone brave enough to use this - Good Luck!
+
+Want to support me staying awake long enough to add some more features?
+
+<a href="https://www.buymeacoffee.com/blanksourcecode" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/default-orange.png" alt="Buy Me A Coffee" height="41" width="174"></a>
+
