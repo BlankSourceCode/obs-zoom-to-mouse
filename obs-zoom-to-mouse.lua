@@ -6,7 +6,7 @@
 
 local obs = obslua
 local ffi = require("ffi")
-local VERSION = "1.0.1"
+local VERSION = "1.0"
 local CROP_FILTER_NAME = "obs-zoom-to-mouse-crop"
 
 local source_name = ""
@@ -195,7 +195,7 @@ function get_dc_info()
             prop_type = "int"
         }
     elseif ffi.os == "OSX" then
-        if major > 29.1 then
+        if major > 29.0 then
             return {
                 source_id = "screen_capture",
                 prop_id = "display_uuid",
@@ -1065,7 +1065,6 @@ function log_current_settings()
     }
 
     log("OBS Version: " .. string.format("%.1f", major))
-    log("Script Version: " .. VERSION)
     log("Current settings:")
     log(format_table(settings))
 end
@@ -1255,7 +1254,7 @@ end
 
 function script_unload()
     -- Clean up the memory usage
-    if major > 29.0 then
+    if major > 29.0 then -- 29.0 seems to crash if you do this, so we ignore it as the script is closing anyway
         local transitions = obs.obs_frontend_get_transitions()
         if transitions ~= nil then
             for i, s in pairs(transitions) do
