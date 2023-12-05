@@ -62,6 +62,12 @@ Inspired by [tryptech](https://github.com/tryptech)'s [obs-zoom-and-follow](http
    * **More Info**: Show this text in the script log
    * **Enable debug logging**: Show additional debug information in the script log
 
+1. If you have [ljsocket.lua](https://github.com/BlankSourceCode/obs-zoom-to-mouse-remote) in the same directory as `obs-zoom-to-mouse.lua`, the following settings will also be available:
+   * **Enable remote mouse listener**: True to start a UDP socket server that will listen for mouse position messages from a remote client
+   * **Port**: The port number to use for the socket server
+   * **Poll Delay**: The time between updating the mouse position (in milliseconds)
+   * For more information see [obs-zoom-to-mouse-remote](https://github.com/BlankSourceCode/obs-zoom-to-mouse-remote)
+
 1. In OBS, open File -> Settings -> Hotkeys 
    * Add a hotkey for `Toggle zoom to mouse` to zoom in and out
    * Add a hotkey for `Toggle follow mouse during zoom` to turn mouse tracking on and off (*Optional*)
