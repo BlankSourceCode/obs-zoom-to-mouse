@@ -71,6 +71,8 @@ local use_socket = false
 local socket_port = 0
 local socket_poll = 1000
 local debug_logs = false
+local is_obs_loaded = false
+local is_script_loaded = false
 
 local ZoomState = {
     None = 0,
@@ -81,7 +83,9 @@ local ZoomState = {
 local zoom_state = ZoomState.None
 
 local version = obs.obs_get_version_string()
-local major = tonumber(version:match("(%d+%.%d+)")) or 0
+local m1, m2 = version:match("(%d+%.%d+)%.(%d+)")
+local major = tonumber(m1) or 0
+local minor = tonumber(m2) or 0
 
 -- Define the mouse cursor functions for each platform
 if ffi.os == "Windows" then
@@ -601,12 +605,14 @@ function refresh_sceneitem(find_newest)
         end
 
         if source_width == 0 or source_height == 0 then
-            log("ERROR: Something went wrong determining source size." ..
-                "       Try using the 'Set manual source position' option and adding override values")
-
-            if monitor_info ~= nil then
+            if monitor_info ~= nil and monitor_info.width > 0 and monitor_info.height > 0 then
+                log("WARNING: Something went wrong determining source size.\n" ..
+                    "         Using source size from info: " .. monitor_info.width .. ", " .. monitor_info.height)
                 source_width = monitor_info.width
                 source_height = monitor_info.height
+            else
+                log("ERROR: Something went wrong determining source size.\n" ..
+                "       Try using the 'Set manual source position' option and adding override values")
             end
         else
             log("Using source size: " .. source_width .. ", " .. source_height)
@@ -1034,6 +1040,7 @@ end
 function stop_server()
     if socket_server ~= nil then
         log("Socket server stopped")
+        obs.timer_remove(on_socket_timer)
         socket_server:close()
         socket_server = nil
         socket_mouse = nil
@@ -1061,16 +1068,34 @@ end
 
 function on_frontend_event(event)
     if event == obs.OBS_FRONTEND_EVENT_SCENE_CHANGED then
-        log("Scene changed")
+        log("OBS Scene changed")
         -- If the scene changes we attempt to find a new source with the same name in this new scene
         -- TODO: There probably needs to be a way for users to specify what source they want to use in each scene
+        -- Scene change can happen before OBS has completely loaded, so we check for that here
+        if is_obs_loaded then
+            refresh_sceneitem(true)
+        end
+    elseif event == obs.OBS_FRONTEND_EVENT_FINISHED_LOADING then
+        log("OBS Loaded")
+        -- Once loaded we perform our initial lookup
+        is_obs_loaded = true
+        monitor_info = get_monitor_info(source)
         refresh_sceneitem(true)
+    elseif event == obs.OBS_FRONTEND_EVENT_SCRIPTING_SHUTDOWN then
+        log("OBS Shutting down")
+        -- Add a fail-safe for unloading the script during shutdown
+        if is_script_loaded then
+            script_unload()
+        end
     end
 end
 
 function on_update_transform()
     -- Update the crop/size settings based on whatever the source in the current scene looks like
-    refresh_sceneitem(true)
+    if is_obs_loaded then
+        refresh_sceneitem(true)
+    end
+
     return true
 end
 
@@ -1136,7 +1161,8 @@ function log_current_settings()
         debug_logs = debug_logs
     }
 
-    log("OBS Version: " .. string.format("%.1f", major))
+    log("OBS Version: " .. string.format("%.1f", major) .. "." .. minor)
+    log("Platform: " .. ffi.os)
     log("Current settings:")
     log(format_table(settings))
 end
@@ -1362,11 +1388,14 @@ function script_load(settings)
 
     source_name = ""
     use_socket = false
+    is_script_loaded = true
 end
 
 function script_unload()
+    is_script_loaded = false
+
     -- Clean up the memory usage
-    if major > 29.0 then -- 29.0 seems to crash if you do this, so we ignore it as the script is closing anyway
+    if major > 29.1 or (major == 29.1 and minor > 2) then -- 29.1.2 and below seems to crash if you do this, so we ignore it as the script is closing anyway
         local transitions = obs.obs_frontend_get_transitions()
         if transitions ~= nil then
             for i, s in pairs(transitions) do
@@ -1447,6 +1476,7 @@ function script_update(settings)
     local old_dh = monitor_override_dh
     local old_socket = use_socket
     local old_port = socket_port
+    local old_poll = socket_poll
 
     -- Update the settings
     source_name = obs.obs_data_get_string(settings, "source")
@@ -1474,7 +1504,7 @@ function script_update(settings)
     debug_logs = obs.obs_data_get_bool(settings, "debug_logs")
 
     -- Only do the expensive refresh if the user selected a new source
-    if source_name ~= old_source_name then
+    if source_name ~= old_source_name and is_obs_loaded then
         refresh_sceneitem(true)
     end
 
@@ -1489,7 +1519,9 @@ function script_update(settings)
         monitor_override_sy ~= old_sy or
         monitor_override_w ~= old_dw or
         monitor_override_h ~= old_dh then
-        monitor_info = get_monitor_info(source)
+        if is_obs_loaded then
+            monitor_info = get_monitor_info(source)
+        end
     end
 
     if old_socket ~= use_socket then
@@ -1498,6 +1530,9 @@ function script_update(settings)
         else
             stop_server()
         end
+    elseif use_socket and (old_poll ~= socket_poll or old_port ~= socket_port) then
+        stop_server()
+        start_server()
     end
 end
 
