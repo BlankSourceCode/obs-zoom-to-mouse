@@ -6,7 +6,7 @@
 
 local obs = obslua
 local ffi = require("ffi")
-local VERSION = "1.0"
+local VERSION = "1.0.2"
 local CROP_FILTER_NAME = "obs-zoom-to-mouse-crop"
 
 local socket_available, socket = pcall(require, "ljsocket")
@@ -1158,7 +1158,8 @@ function log_current_settings()
         use_socket = use_socket,
         socket_port = socket_port,
         socket_poll = socket_poll,
-        debug_logs = debug_logs
+        debug_logs = debug_logs,
+        version = VERSION
     }
 
     log("OBS Version: " .. string.format("%.1f", major) .. "." .. minor)
@@ -1195,7 +1196,7 @@ function on_print_help()
 
     if socket_available then
         help = help ..
-            "Enable remote mouse listener: True to start a UDP socket server that will listen for mouse position messages from a remote client\n" ..
+            "Enable remote mouse listener: True to start a UDP socket server that will listen for mouse position messages from a remote client, see: https://github.com/BlankSourceCode/obs-zoom-to-mouse-remote\n" ..
             "Port: The port number to use for the socket server\n" ..
             "Poll Delay: The time between updating the mouse position (in milliseconds)\n"
     end
@@ -1322,6 +1323,11 @@ end
 
 function script_load(settings)
     sceneitem_info_orig = nil
+
+    -- Workaround for detecting if OBS is already loaded and we were reloaded using "Reload Scripts"
+    local current_scene = obs.obs_frontend_get_current_scene()
+    is_obs_loaded = current_scene ~= nil -- Current scene is nil on first OBS load
+    obs.obs_source_release(current_scene)
 
     -- Add our hotkey
     hotkey_zoom_id = obs.obs_hotkey_register_frontend("toggle_zoom_hotkey", "Toggle zoom to mouse",
