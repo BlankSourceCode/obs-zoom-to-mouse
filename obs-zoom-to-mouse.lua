@@ -520,9 +520,14 @@ function refresh_sceneitem(find_newest)
                             if all_items then
                                 for _, item in pairs(all_items) do
                                     local nested = obs.obs_sceneitem_get_source(item)
-                                    if nested ~= nil and obs.obs_source_is_scene(nested) then
-                                        local nested_scene = obs.obs_scene_from_source(nested)
-                                        table.insert(queue, nested_scene)
+                                    if nested ~= nil then
+                                        if obs.obs_source_is_scene(nested) then
+                                            local nested_scene = obs.obs_scene_from_source(nested)
+                                            table.insert(queue, nested_scene)
+                                        elseif obs.obs_source_is_group(nested) then
+                                            local nested_scene = obs.obs_group_from_source(nested)
+                                            table.insert(queue, nested_scene)
+                                        end
                                     end
                                 end
                                 obs.sceneitem_list_release(all_items)
@@ -655,11 +660,11 @@ function refresh_sceneitem(find_newest)
                                     zoom_info.source_crop_filter.w + obs.obs_data_get_int(settings, "cx")
                                 zoom_info.source_crop_filter.h =
                                     zoom_info.source_crop_filter.h + obs.obs_data_get_int(settings, "cy")
-                                log("Found existing relative crop/pad filter (" ..
+                                log("Found existing non-relative crop/pad filter (" ..
                                     name ..
                                     "). Applying settings " .. format_table(zoom_info.source_crop_filter))
                             else
-                                log("WARNING: Found existing non-relative crop/pad filter (" .. name .. ").\n" ..
+                                log("WARNING: Found existing relative crop/pad filter (" .. name .. ").\n" ..
                                     "         This will cause issues with zooming. Convert to relative settings instead.")
                             end
                             obs.obs_data_release(settings)
