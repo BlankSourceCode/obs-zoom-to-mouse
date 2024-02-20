@@ -1180,7 +1180,7 @@ function on_print_help()
         "----------------------------------------------------\n" ..
         "This script will zoom the selected display-capture source to focus on the mouse\n\n" ..
         "Zoom Source: The display capture in the current scene to use for zooming\n" ..
-        "Zoom Factor: How much to zoom in by\n" ..
+        "Zoom Level: How much to zoom in by\n" ..
         "Zoom Speed: The speed of the zoom in/out animation\n" ..
         "Auto follow mouse: True to track the cursor while you are zoomed in\n" ..
         "Follow outside bounds: True to track the cursor even when it is outside the bounds of the source\n" ..
@@ -1236,7 +1236,7 @@ function script_properties()
         "Click to re-populate Zoom Sources dropdown with available sources")
 
     -- Add the rest of the settings UI
-    local zoom = obs.obs_properties_add_float(props, "zoom_value", "Zoom Factor", 1, 5, 0.5)
+    local zoom = obs.obs_properties_add_float(props, "zoom_value", "Zoom Level", 1, 5, 0.5)
     local zoom_speed = obs.obs_properties_add_float_slider(props, "zoom_speed", "Zoom Speed", 0.01, 1, 0.01)
     local follow = obs.obs_properties_add_bool(props, "follow", "Auto follow mouse ")
     obs.obs_property_set_long_description(follow,
