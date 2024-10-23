@@ -87,6 +87,12 @@ local m1, m2 = version:match("(%d+%.%d+)%.(%d+)")
 local major = tonumber(m1) or 0
 local minor = tonumber(m2) or 0
 
+local keep_shape = false
+local auto_start = false
+local auto_start_running = false
+local aspect_ratio_w = 1
+local aspect_ratio_h = 1
+
 -- Define the mouse cursor functions for each platform
 if ffi.os == "Windows" then
     ffi.cdef([[
@@ -297,6 +303,33 @@ function clamp(min, max, value)
 end
 
 ---
+-- Function to calculate GCD (Greatest Common Divisor)
+--- @param a number
+--- @param b number
+function gcd(a, b)
+    while b ~= 0 do
+        local temp = b
+        b = a % b
+        a = temp
+    end
+    return a
+end
+
+---
+-- Function to convert resolution to aspect ratio
+--- @param width number the width of the resolution
+--- @param height number the height of the resolution
+--- @return number aspect_width, number aspect_height the simplified aspect ratio as two numbers
+function resolution_to_aspect_ratio(width, height)
+    -- Calculate GCD of width and height
+    local divisor = gcd(width, height)
+    -- Simplify width and height using GCD
+    local aspect_width = width / divisor
+    local aspect_height = height / divisor
+    return aspect_width, aspect_height
+end
+
+---
 -- Get the size and position of the monitor so that we know the top-left mouse point
 ---@param source any The OBS source
 ---@return table|nil monitor_info The monitor size/top-left point
@@ -458,6 +491,7 @@ function release_sceneitem()
             sceneitem_crop_orig = nil
         end
 
+        toggle_sceneitem_change_listener(false)
         obs.obs_sceneitem_release(sceneitem)
         sceneitem = nil
     end
@@ -541,6 +575,7 @@ function refresh_sceneitem(find_newest)
                     -- We start at the current scene and use a BFS to look into any nested scenes
                     local current = obs.obs_scene_from_source(scene_source)
                     sceneitem = find_scene_item_by_name(current)
+                    toggle_sceneitem_change_listener(true)
 
                     obs.obs_source_release(scene_source)
                 end
@@ -548,8 +583,10 @@ function refresh_sceneitem(find_newest)
                 if not sceneitem then
                     log("WARNING: Source not part of the current scene hierarchy.\n" ..
                         "         Try selecting a different zoom source or switching scenes.")
+                    toggle_sceneitem_change_listener(false)
                     obs.obs_sceneitem_release(sceneitem)
                     obs.obs_source_release(source)
+
 
                     sceneitem = nil
                     source = nil
@@ -784,7 +821,12 @@ function get_target_position(zoom)
     -- Remember that because we are using a crop/pad filter making the size smaller (dividing by zoom) means that we see less of the image
     -- in the same amount of space making it look bigger (aka zoomed in)
     local new_size = {
-        width = zoom.source_size.width / zoom.zoom_to,
+        width = (
+            --  if should keep shape, use aspect ratio to get new width
+            keep_shape and (zoom.source_size.height * (aspect_ratio_w / aspect_ratio_h))
+            --  else use source resolution
+            or  zoom.source_size.width
+        ) / zoom.zoom_to,
         height = zoom.source_size.height / zoom.zoom_to
     }
 
@@ -825,11 +867,12 @@ function on_toggle_follow(pressed)
     end
 end
 
-function on_toggle_zoom(pressed)
-    if pressed then
+function on_toggle_zoom(pressed, force_value)
+    if pressed or force_value then
         -- Check if we are in a safe state to zoom
-        if zoom_state == ZoomState.ZoomedIn or zoom_state == ZoomState.None then
-            if zoom_state == ZoomState.ZoomedIn then
+        if zoom_state == ZoomState.ZoomedIn or zoom_state == ZoomState.None or force_value then
+            local should_zoom = (force_value ~= nil) and force_value or (zoom_state ~= ZoomState.ZoomedIn)
+            if not should_zoom then
                 log("Zooming out")
                 -- To zoom out, we set the target back to whatever it was originally
                 zoom_state = ZoomState.ZoomingOut
@@ -844,6 +887,9 @@ function on_toggle_zoom(pressed)
             else
                 log("Zooming in")
                 -- To zoom in, we get a new target based on where the mouse was when zoom was clicked
+                if keep_shape then
+                    update_aspect_ratio()
+                end
                 zoom_state = ZoomState.ZoomingIn
                 zoom_info.zoom_to = zoom_value
                 zoom_time = 0
@@ -1069,6 +1115,53 @@ function on_transition_start(t)
     -- We need to remove the crop from the sceneitem as the transition starts to avoid
     -- a delay with the rendering where you see the old crop and jump to the new one
     release_sceneitem()
+    
+    ---
+    -- Ensure to restart filters on scene change back
+    ---
+    if source_name ~= "obs-zoom-to-mouse-none" and auto_start and not auto_start_running then
+        log("Auto starting")
+        auto_start_running = true
+        local timer_interval = math.floor(obs.obs_get_frame_interval_ns() / 100000)
+        obs.timer_add(wait_for_auto_start, timer_interval)
+    end    
+end
+
+function update_aspect_ratio()
+    if keep_shape == nil or not keep_shape or sceneitem == nil then
+        return
+    end
+
+    sceneitem_info_current = obs.obs_transform_info()
+    obs.obs_sceneitem_get_info(sceneitem, sceneitem_info_current)
+    aspect_ratio_w, aspect_ratio_h = resolution_to_aspect_ratio(
+        sceneitem_info_current.bounds.x, sceneitem_info_current.bounds.y
+    )
+end
+
+function on_transform_update()
+    update_aspect_ratio()
+    if keep_shape then
+        if zoom_state == ZoomState.ZoomedIn then
+            -- Perform zoom again
+            zoom_state = ZoomState.ZoomingIn
+            zoom_info.zoom_to = zoom_value
+            zoom_time = 0
+            zoom_target = get_target_position(zoom_info)
+        end
+    end
+end
+
+function toggle_sceneitem_change_listener(value)
+    local scene = obs.obs_sceneitem_get_scene(sceneitem)
+    local scene_source = obs.obs_scene_get_source(scene)
+    local handler = obs.obs_source_get_signal_handler(scene_source)
+    if value then
+        update_aspect_ratio()
+        obs.signal_handler_connect(handler, "item_transform", on_transform_update)
+    else
+        obs.signal_handler_disconnect(handler, on_transform_update)
+    end
 end
 
 function on_frontend_event(event)
@@ -1130,6 +1223,8 @@ function on_settings_modified(props, prop, settings)
         local sources_list = obs.obs_properties_get(props, "source")
         populate_zoom_sources(sources_list)
         return true
+    elseif name == "keep_shape" then
+        on_transform_update()
     elseif name == "debug_logs" then
         if obs.obs_data_get_bool(settings, "debug_logs") then
             log_current_settings()
@@ -1145,6 +1240,8 @@ function log_current_settings()
     local settings = {
         zoom_value = zoom_value,
         zoom_speed = zoom_speed,
+        auto_start = auto_start,
+        keep_shape = keep_shape,
         use_auto_follow_mouse = use_auto_follow_mouse,
         use_follow_outside_bounds = use_follow_outside_bounds,
         follow_speed = follow_speed,
@@ -1182,6 +1279,8 @@ function on_print_help()
         "Zoom Source: The display capture in the current scene to use for zooming\n" ..
         "Zoom Factor: How much to zoom in by\n" ..
         "Zoom Speed: The speed of the zoom in/out animation\n" ..
+        "Zoomed at OBS startup: Start OBS with source zoomed\n" ..
+        "Dynamic Aspect Ratio: Adjusst zoom aspect ratio to canvas source size\n" ..
         "Auto follow mouse: True to track the cursor while you are zoomed in\n" ..
         "Follow outside bounds: True to track the cursor even when it is outside the bounds of the source\n" ..
         "Follow Speed: The speed at which the zoomed area will follow the mouse when tracking\n" ..
@@ -1238,6 +1337,15 @@ function script_properties()
     -- Add the rest of the settings UI
     local zoom = obs.obs_properties_add_float(props, "zoom_value", "Zoom Factor", 1, 5, 0.5)
     local zoom_speed = obs.obs_properties_add_float_slider(props, "zoom_speed", "Zoom Speed", 0.01, 1, 0.01)
+
+    local auto_start = obs.obs_properties_add_bool(props, "auto_start", "Zoomed at OBS startup ")
+    obs.obs_property_set_long_description(auto_start,
+        "When enabled, auto zoom is activated on OBS start up as soon as possible")
+
+    local keep_shape = obs.obs_properties_add_bool(props, "keep_shape", "Dynamic Aspect Ratio ")
+    obs.obs_property_set_long_description(keep_shape,
+        "When enabled, zoom will follow he aspect ratio of source in canvas")
+
     local follow = obs.obs_properties_add_bool(props, "follow", "Auto follow mouse ")
     obs.obs_property_set_long_description(follow,
         "When enabled mouse traking will auto-start when zoomed in without waiting for tracking toggle hotkey")
@@ -1353,7 +1461,6 @@ function script_load(settings)
     -- Load any other settings
     zoom_value = obs.obs_data_get_double(settings, "zoom_value")
     zoom_speed = obs.obs_data_get_double(settings, "zoom_speed")
-    use_auto_follow_mouse = obs.obs_data_get_bool(settings, "follow")
     use_follow_outside_bounds = obs.obs_data_get_bool(settings, "follow_outside_bounds")
     follow_speed = obs.obs_data_get_double(settings, "follow_speed")
     follow_border = obs.obs_data_get_int(settings, "follow_border")
@@ -1373,6 +1480,8 @@ function script_load(settings)
     socket_port = obs.obs_data_get_int(settings, "socket_port")
     socket_poll = obs.obs_data_get_int(settings, "socket_poll")
     debug_logs = obs.obs_data_get_bool(settings, "debug_logs")
+    auto_start = obs.obs_data_get_bool(settings, "auto_start")
+    keep_shape = obs.obs_data_get_bool(settings, "keep_shape")
 
     obs.obs_frontend_add_event_callback(on_frontend_event)
 
@@ -1400,6 +1509,13 @@ function script_load(settings)
     source_name = ""
     use_socket = false
     is_script_loaded = true
+
+    if source_name ~= "obs-zoom-to-mouse-none" and auto_start and not auto_start_running then
+        log("Auto starting")
+        auto_start_running = true
+        local timer_interval = math.floor(obs.obs_get_frame_interval_ns() / 100000)
+        obs.timer_add(wait_for_auto_start, timer_interval)
+    end
 end
 
 function script_unload()
@@ -1457,6 +1573,8 @@ function script_defaults(settings)
     obs.obs_data_set_default_int(settings, "socket_port", 12345)
     obs.obs_data_set_default_int(settings, "socket_poll", 10)
     obs.obs_data_set_default_bool(settings, "debug_logs", false)
+    obs.obs_data_set_default_bool(settings, "auto_start", false)
+    obs.obs_data_set_default_bool(settings, "keep_shape", false)
 end
 
 function script_save(settings)
@@ -1513,6 +1631,8 @@ function script_update(settings)
     socket_port = obs.obs_data_get_int(settings, "socket_port")
     socket_poll = obs.obs_data_get_int(settings, "socket_poll")
     debug_logs = obs.obs_data_get_bool(settings, "debug_logs")
+    auto_start = obs.obs_data_get_bool(settings, "auto_start")
+    keep_shape = obs.obs_data_get_bool(settings, "keep_shape")
 
     -- Only do the expensive refresh if the user selected a new source
     if source_name ~= old_source_name and is_obs_loaded then
@@ -1544,6 +1664,32 @@ function script_update(settings)
     elseif use_socket and (old_poll ~= socket_poll or old_port ~= socket_port) then
         stop_server()
         start_server()
+    end
+
+    if source_name ~= "obs-zoom-to-mouse-none" and auto_start and not auto_start_running then
+        log("Auto starting")
+        auto_start_running = true
+        local timer_interval = math.floor(obs.obs_get_frame_interval_ns() / 100000)
+        obs.timer_add(wait_for_auto_start, timer_interval)
+    end
+end
+
+function wait_for_auto_start()
+    if source_name == "obs-zoom-to-mouse-none" or not auto_start then
+        obs.remove_current_callback()
+        auto_start_running = false
+        log("Auto start cancelled")
+    else
+        auto_start_running = true
+        local found_source = obs.obs_get_source_by_name(source_name)
+        if found_source ~= nil then
+            -- zoom_state = ZoomState.ZoomingIn
+            source = found_source
+            on_toggle_zoom(true, true)
+            obs.remove_current_callback()
+            auto_start_running = false
+            log("Auto start done")
+        end
     end
 end
 
