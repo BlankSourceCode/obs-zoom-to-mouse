@@ -4,42 +4,47 @@
 -- Copyright (c) BlankSourceCode.  All rights reserved.
 --
 
-local obs = obslua
-local ffi = require("ffi")
+local OBS = getfenv().obslua
+local FFI = require("ffi")
 local VERSION = "1.0.2"
 local CROP_FILTER_NAME = "obs-zoom-to-mouse-crop"
 
-local socket_available, socket = pcall(require, "ljsocket")
-local socket_server = nil
-local socket_mouse = nil
+local SOCKET_AVAILABLE, SOCKET = pcall(require, "ljsocket")
+local SOCKET_SERVER = nil
+local SOCKET_MOUSE = nil
+local USE_SOCKET = false
+local SOCKET_PORT = 0
+local SOCKET_POLL = 1000
 
-local source_name = ""
-local source = nil
-local sceneitem = nil
-local sceneitem_info_orig = nil
-local sceneitem_crop_orig = nil
-local sceneitem_info = nil
-local sceneitem_crop = nil
-local crop_filter = nil
-local crop_filter_temp = nil
-local crop_filter_settings = nil
-local crop_filter_info_orig = { x = 0, y = 0, w = 0, h = 0 }
-local crop_filter_info = { x = 0, y = 0, w = 0, h = 0 }
-local monitor_info = nil
-local zoom_info = {
+local DC_SOURCE = nil
+local SCENEITEM = nil
+local SCENEITEM_INFO = {
+    current = nil,
+    original = nil,
+}
+local SCENEITEM_CROP = nil
+local CROP_FILTER = {
+    conversion = nil,
+    zoom = nil,
+}
+local CROP_FILTER_SETTINGS = nil
+local CROP_FILTER_INFO = {
+    current = { x = 0, y = 0, w = 0, h = 0 },
+    original = { x = 0, y = 0, w = 0, h = 0 },
+}
+local MONITOR_INFO = nil
+local ZOOM_INFO = {
     source_size = { width = 0, height = 0 },
     source_crop = { x = 0, y = 0, w = 0, h = 0 },
-    source_crop_filter = { x = 0, y = 0, w = 0, h = 0 },
+    crop_sums = { x = 0, y = 0, w = 0, h = 0 },
     zoom_to = 2
 }
-local zoom_time = 0
-local zoom_target = nil
-local locked_center = nil
-local locked_last_pos = nil
-local hotkey_zoom_id = nil
-local hotkey_follow_id = nil
-local is_timer_running = false
+local ZOOM_TARGET = nil
+local LOCKED_CENTER = nil
+local LOCKED_LAST_POS = nil
+local HOTKEYS = {}
 
+local IS_TIMER_RUNNING = false
 local win_point = nil
 local x11_display = nil
 local x11_root = nil
@@ -48,31 +53,40 @@ local osx_lib = nil
 local osx_nsevent = nil
 local osx_mouse_location = nil
 
-local use_auto_follow_mouse = true
-local use_follow_outside_bounds = false
-local is_following_mouse = false
-local follow_speed = 0.1
-local follow_border = 0
-local follow_safezone_sensitivity = 10
-local use_follow_auto_lock = false
-local zoom_value = 2
-local zoom_speed = 0.1
-local allow_all_sources = false
-local use_monitor_override = false
-local monitor_override_x = 0
-local monitor_override_y = 0
-local monitor_override_w = 0
-local monitor_override_h = 0
-local monitor_override_sx = 0
-local monitor_override_sy = 0
-local monitor_override_dw = 0
-local monitor_override_dh = 0
-local use_socket = false
-local socket_port = 0
-local socket_poll = 1000
-local debug_logs = false
-local is_obs_loaded = false
-local is_script_loaded = false
+local SETTINGS = {
+    auto_start = true,
+    dc_source_name = "",
+    use_rezoom = false,
+    use_auto_follow_mouse = true,
+    follow_outside_bounds = false,
+    clamp_to_edges = true,
+    is_following_mouse = false,
+    follow_speed = 0.1,
+    follow_border = 0,
+    follow_safezone_sensitivity = 10,
+    use_follow_auto_lock = false,
+    zoom_value = 2,
+    zoom_speed = 0.1,
+    allow_all_sources = false,
+    use_monitor_override = false,
+    monitor_override_x = 0,
+    monitor_override_y = 0,
+    monitor_override_w = 0,
+    monitor_override_h = 0,
+    monitor_override_sx = 0,
+    monitor_override_sy = 0,
+    monitor_override_dw = 0,
+    monitor_override_dh = 0,
+    keep_shape = false,
+    shape_aspect = 1,
+    use_socket = false,
+    socket_port = 0,
+    socket_poll = 1000,
+    debug_logs = false,
+}
+
+local IS_OBS_LOADED = false
+local IS_SCRIPT_LOADED = false
 
 local ZoomState = {
     None = 0,
@@ -80,16 +94,18 @@ local ZoomState = {
     ZoomingOut = 2,
     ZoomedIn = 3,
 }
-local zoom_state = ZoomState.None
+local ZOOM_STATE = ZoomState.None
+local ZOOM_TIME = 0
 
-local version = obs.obs_get_version_string()
-local m1, m2 = version:match("(%d+%.%d+)%.(%d+)")
-local major = tonumber(m1) or 0
-local minor = tonumber(m2) or 0
+local VERSION_STR = OBS.obs_get_version_string()
+local m1, m2 = VERSION_STR:match("(%d+%.%d+)%.(%d+)")
+local VERSION_MAJOR = tonumber(m1) or 0
+local VERSION_MINOR = tonumber(m2) or 0
+local AUTO_START_RUNNING = false
 
 -- Define the mouse cursor functions for each platform
-if ffi.os == "Windows" then
-    ffi.cdef([[
+if FFI.os == "Windows" then
+    FFI.cdef([[
         typedef int BOOL;
         typedef struct{
             long x;
@@ -97,9 +113,9 @@ if ffi.os == "Windows" then
         } POINT, *LPPOINT;
         BOOL GetCursorPos(LPPOINT);
     ]])
-    win_point = ffi.new("POINT[1]")
-elseif ffi.os == "Linux" then
-    ffi.cdef([[
+    win_point = FFI.new("POINT[1]")
+elseif FFI.os == "Linux" then
+    FFI.cdef([[
         typedef unsigned long XID;
         typedef XID Window;
         typedef void Display;
@@ -109,22 +125,22 @@ elseif ffi.os == "Linux" then
         int XCloseDisplay(Display*);
     ]])
 
-    x11_lib = ffi.load("X11.so.6")
+    x11_lib = FFI.load("X11.so.6")
     x11_display = x11_lib.XOpenDisplay(nil)
     if x11_display ~= nil then
         x11_root = x11_lib.XDefaultRootWindow(x11_display)
         x11_mouse = {
-            root_win = ffi.new("Window[1]"),
-            child_win = ffi.new("Window[1]"),
-            root_x = ffi.new("int[1]"),
-            root_y = ffi.new("int[1]"),
-            win_x = ffi.new("int[1]"),
-            win_y = ffi.new("int[1]"),
-            mask = ffi.new("unsigned int[1]")
+            root_win = FFI.new("Window[1]"),
+            child_win = FFI.new("Window[1]"),
+            root_x = FFI.new("int[1]"),
+            root_y = FFI.new("int[1]"),
+            win_x = FFI.new("int[1]"),
+            win_y = FFI.new("int[1]"),
+            mask = FFI.new("unsigned int[1]")
         }
     end
-elseif ffi.os == "OSX" then
-    ffi.cdef([[
+elseif FFI.os == "OSX" then
+    FFI.cdef([[
         typedef struct {
             double x;
             double y;
@@ -140,7 +156,7 @@ elseif ffi.os == "OSX" then
         int access(const char *path, int amode);
     ]])
 
-    osx_lib = ffi.load("libobjc")
+    osx_lib = FFI.load("libobjc")
     if osx_lib ~= nil then
         osx_nsevent = {
             class = osx_lib.objc_getClass("NSEvent"),
@@ -149,7 +165,7 @@ elseif ffi.os == "OSX" then
         local method = osx_lib.class_getClassMethod(osx_nsevent.class, osx_nsevent.sel)
         if method ~= nil then
             local imp = osx_lib.method_getImplementation(method)
-            osx_mouse_location = ffi.cast("CGPoint(*)(void*, void*)", imp)
+            osx_mouse_location = FFI.cast("CGPoint(*)(void*, void*)", imp)
         end
     end
 end
@@ -160,31 +176,31 @@ end
 function get_mouse_pos()
     local mouse = { x = 0, y = 0 }
 
-    if socket_mouse ~= nil then
-        mouse.x = socket_mouse.x
-        mouse.y = socket_mouse.y
+    if SOCKET_MOUSE ~= nil then
+        mouse.x = SOCKET_MOUSE.x
+        mouse.y = SOCKET_MOUSE.y
     else
-        if ffi.os == "Windows" then
-            if win_point and ffi.C.GetCursorPos(win_point) ~= 0 then
+        if FFI.os == "Windows" then
+            if win_point and FFI.C.GetCursorPos(win_point) ~= 0 then
                 mouse.x = win_point[0].x
                 mouse.y = win_point[0].y
             end
-        elseif ffi.os == "Linux" then
+        elseif FFI.os == "Linux" then
             if x11_lib ~= nil and x11_display ~= nil and x11_root ~= nil and x11_mouse ~= nil then
                 if x11_lib.XQueryPointer(x11_display, x11_root, x11_mouse.root_win, x11_mouse.child_win, x11_mouse.root_x, x11_mouse.root_y, x11_mouse.win_x, x11_mouse.win_y, x11_mouse.mask) ~= 0 then
                     mouse.x = tonumber(x11_mouse.win_x[0])
                     mouse.y = tonumber(x11_mouse.win_y[0])
                 end
             end
-        elseif ffi.os == "OSX" then
+        elseif FFI.os == "OSX" then
             if osx_lib ~= nil and osx_nsevent ~= nil and osx_mouse_location ~= nil then
                 local point = osx_mouse_location(osx_nsevent.class, osx_nsevent.sel)
                 mouse.x = point.x
-                if monitor_info ~= nil then
-                    if monitor_info.display_height > 0 then
-                        mouse.y = monitor_info.display_height - point.y
+                if MONITOR_INFO ~= nil then
+                    if MONITOR_INFO.display_height > 0 then
+                        mouse.y = MONITOR_INFO.display_height - point.y
                     else
-                        mouse.y = monitor_info.height - point.y
+                        mouse.y = MONITOR_INFO.height - point.y
                     end
                 end
             end
@@ -198,20 +214,20 @@ end
 -- Get the information about display capture sources for the current platform
 ---@return any
 function get_dc_info()
-    if ffi.os == "Windows" then
+    if FFI.os == "Windows" then
         return {
             source_id = "monitor_capture",
             prop_id = "monitor_id",
             prop_type = "string"
         }
-    elseif ffi.os == "Linux" then
+    elseif FFI.os == "Linux" then
         return {
             source_id = "xshm_input",
             prop_id = "screen",
             prop_type = "int"
         }
-    elseif ffi.os == "OSX" then
-        if major > 29.0 then
+    elseif FFI.os == "OSX" then
+        if VERSION_MAJOR > 29.0 then
             return {
                 source_id = "screen_capture",
                 prop_id = "display_uuid",
@@ -230,11 +246,24 @@ function get_dc_info()
 end
 
 ---
+---@param temp_obj any The managed OBS object
+---@param delete_func function Thefunction which deletes the packaged data (such as obs.obs_data_release)
+---@param callback function The function which carries the temporary object
+function wrap_managed(temp_obj, delete_func, callback)
+    if temp_obj == nil then
+        return
+    end
+    local result = callback(temp_obj)
+    delete_func(temp_obj)
+    return result
+end
+
+---
 -- Logs a message to the OBS script console
 ---@param msg string The message to log
 function log(msg)
-    if debug_logs then
-        obs.script_log(obs.OBS_LOG_INFO, msg)
+    if SETTINGS.debug_logs then
+        OBS.script_log(OBS.OBS_LOG_INFO, msg)
     end
 end
 
@@ -263,13 +292,25 @@ function format_table(tbl, indent)
 end
 
 ---
+-- Take a shallow copy of the table
+---@param tbl any
+---@return string result The copied table
+function copy_table(tbl)
+    local res = {}
+    for k, v in pairs(tbl) do
+        res[k] = v
+    end
+    return res
+end
+
+---
 -- Linear interpolate between v0 and v1
 ---@param v0 number The start position
 ---@param v1 number The end position
 ---@param t number Time
 ---@return number value The interpolated value
 function lerp(v0, v1, t)
-    return v0 * (1 - t) + v1 * t;
+    return v0 * (1 - t) + v1 * t
 end
 
 ---
@@ -301,88 +342,95 @@ end
 ---@param source any The OBS source
 ---@return table|nil monitor_info The monitor size/top-left point
 function get_monitor_info(source)
-    local info = nil
+    if SETTINGS.use_monitor_override then
+        return {
+            x = SETTINGS.monitor_override_x,
+            y = SETTINGS.monitor_override_y,
+            width = SETTINGS.monitor_override_w,
+            height = SETTINGS.monitor_override_h,
+            scale_x = SETTINGS.monitor_override_sx,
+            scale_y = SETTINGS.monitor_override_sy,
+            display_width = SETTINGS.monitor_override_dw,
+            display_height = SETTINGS.monitor_override_dh,
+        }
+    end
 
-    -- Only do the expensive look up if we are using automatic calculations on a display source
-    if is_display_capture(source) and not use_monitor_override then
-        local dc_info = get_dc_info()
-        if dc_info ~= nil then
-            local props = obs.obs_source_properties(source)
-            if props ~= nil then
-                local monitor_id_prop = obs.obs_properties_get(props, dc_info.prop_id)
-                if monitor_id_prop then
-                    local found = nil
-                    local settings = obs.obs_source_get_settings(source)
-                    if settings ~= nil then
-                        local to_match
-                        if dc_info.prop_type == "string" then
-                            to_match = obs.obs_data_get_string(settings, dc_info.prop_id)
-                        elseif dc_info.prop_type == "int" then
-                            to_match = obs.obs_data_get_int(settings, dc_info.prop_id)
-                        end
+    local function find_display_name(dc_info, settings, monitor_id_prop)
+        local to_match
+        if dc_info.prop_type == "string" then
+            to_match = OBS.obs_data_get_string(settings, dc_info.prop_id)
+        elseif dc_info.prop_type == "int" then
+            to_match = OBS.obs_data_get_int(settings, dc_info.prop_id)
+        end
 
-                        local item_count = obs.obs_property_list_item_count(monitor_id_prop);
-                        for i = 0, item_count do
-                            local name = obs.obs_property_list_item_name(monitor_id_prop, i)
-                            local value
-                            if dc_info.prop_type == "string" then
-                                value = obs.obs_property_list_item_string(monitor_id_prop, i)
-                            elseif dc_info.prop_type == "int" then
-                                value = obs.obs_property_list_item_int(monitor_id_prop, i)
-                            end
+        local item_count = OBS.obs_property_list_item_count(monitor_id_prop)
+        for i = 0, item_count do
+            local name = OBS.obs_property_list_item_name(monitor_id_prop, i)
+            local value
+            if dc_info.prop_type == "string" then
+                value = OBS.obs_property_list_item_string(monitor_id_prop, i)
+            elseif dc_info.prop_type == "int" then
+                value = OBS.obs_property_list_item_int(monitor_id_prop, i)
+            end
 
-                            if value == to_match then
-                                found = name
-                                break
-                            end
-                        end
-                        obs.obs_data_release(settings)
-                    end
-
-                    -- This works for my machine as the monitor names are given as "U2790B: 3840x2160 @ -1920,0 (Primary Monitor)"
-                    -- I don't know if this holds true for other machines and/or OBS versions
-                    -- TODO: Update this with some custom FFI calls to find the monitor top-left x and y coordinates if it doesn't work for anyone else
-                    -- TODO: Refactor this into something that would work with Windows/Linux/Mac assuming we can't do it like this
-                    if found then
-                        log("Parsing display name: " .. found)
-                        local x, y = found:match("(-?%d+),(-?%d+)")
-                        local width, height = found:match("(%d+)x(%d+)")
-
-                        info = { x = 0, y = 0, width = 0, height = 0 }
-                        info.x = tonumber(x, 10)
-                        info.y = tonumber(y, 10)
-                        info.width = tonumber(width, 10)
-                        info.height = tonumber(height, 10)
-                        info.scale_x = 1
-                        info.scale_y = 1
-                        info.display_width = info.width
-                        info.display_height = info.height
-
-                        log("Parsed the following display information\n" .. format_table(info))
-
-                        if info.width == 0 and info.height == 0 then
-                            info = nil
-                        end
-                    end
-                end
-
-                obs.obs_properties_destroy(props)
+            if value == to_match then
+                return name
             end
         end
     end
 
-    if use_monitor_override then
-        info = {
-            x = monitor_override_x,
-            y = monitor_override_y,
-            width = monitor_override_w,
-            height = monitor_override_h,
-            scale_x = monitor_override_sx,
-            scale_y = monitor_override_sy,
-            display_width = monitor_override_dw,
-            display_height = monitor_override_dh
-        }
+    local function calculate_info()
+        if not should_use_source(source) then
+            return
+        end
+
+        local dc_info = get_dc_info()
+        if dc_info == nil then
+            return
+        end
+
+        return wrap_managed(OBS.obs_source_properties(source), OBS.obs_properties_destroy, function(props)
+            local monitor_id_prop = OBS.obs_properties_get(props, dc_info.prop_id)
+            if monitor_id_prop == nil then
+                return
+            end
+
+            local found = wrap_managed(OBS.obs_source_get_settings(source), OBS.obs_data_release, function(settings)
+                return find_display_name(dc_info, settings, monitor_id_prop)
+            end)
+
+            if not found then
+                return
+            end
+
+            -- This works for many machines as the monitor names are given as "U2790B: 3840x2160 @ -1920,0 (Primary Monitor)"
+            -- I don't know if this holds true for other machines and/or OBS versions
+            -- TODO: Update this with some custom FFI calls to find the monitor top-left x and y coordinates if it doesn't work for anyone else
+            -- TODO: Refactor this into something that would work with Windows/Linux/Mac assuming we can't do it like this
+            log("Parsing display name: " .. found)
+            local x, y = found:match("(-?%d+),(-?%d+)")
+            local width, height = found:match("(%d+)x(%d+)")
+
+            local temp_info = { x = 0, y = 0, width = 0, height = 0 }
+            temp_info.x = tonumber(x, 10)
+            temp_info.y = tonumber(y, 10)
+            temp_info.width = tonumber(width, 10)
+            temp_info.height = tonumber(height, 10)
+            temp_info.scale_x = 1
+            temp_info.scale_y = 1
+            temp_info.display_width = temp_info.width
+            temp_info.display_height = temp_info.height
+
+            log("Parsed the following display information\n" .. format_table(temp_info))
+
+            if temp_info.width > 0 or temp_info.height > 0 then
+                return temp_info
+            end
+        end)
     end
+
+    -- Only do the expensive look up if we are using automatic calculations on a display source
+    local info = calculate_info()
 
     if not info then
         log("WARNING: Could not auto calculate zoom source position and size.\n" ..
@@ -397,74 +445,62 @@ end
 -- If the source_to_check is nil then the answer will be false
 ---@param source_to_check any The source to check
 ---@return boolean result True if source is a display capture, false if it nil or some other source type
-function is_display_capture(source_to_check)
-    if source_to_check ~= nil then
-        local dc_info = get_dc_info()
-        if dc_info ~= nil then
-            -- Do a quick check to ensure this is a display capture
-            if allow_all_sources then
-                local source_type = obs.obs_source_get_id(source_to_check)
-                if source_type == dc_info.source_id then
-                    return true
-                end
-            else
-                return true
-            end
-        end
+function should_use_source(source_to_check)
+    if not SETTINGS.allow_all_sources then
+        return true
     end
 
-    return false
+    if source_to_check == nil then
+        return false
+    end
+
+    local dc_info = get_dc_info()
+    if dc_info == nil then
+        return false
+    end
+
+    local source_type = OBS.obs_source_get_id(source_to_check)
+    return source_type == dc_info.source_id
 end
 
 ---
 -- Releases the current sceneitem and resets data back to default
 function release_sceneitem()
-    if is_timer_running then
-        obs.timer_remove(on_timer)
-        is_timer_running = false
+    if IS_TIMER_RUNNING then
+        OBS.timer_remove(on_timer)
+        IS_TIMER_RUNNING = false
     end
 
-    zoom_state = ZoomState.None
+    ZOOM_STATE = ZoomState.None
 
-    if sceneitem ~= nil then
-        if crop_filter ~= nil and source ~= nil then
+    if SCENEITEM ~= nil then
+        if CROP_FILTER.zoom ~= nil and DC_SOURCE ~= nil then
             log("Zoom crop filter removed")
-            obs.obs_source_filter_remove(source, crop_filter)
-            obs.obs_source_release(crop_filter)
-            crop_filter = nil
+            OBS.obs_source_filter_remove(DC_SOURCE, CROP_FILTER.zoom)
+            OBS.obs_source_release(CROP_FILTER.zoom)
+            CROP_FILTER.zoom = nil
         end
 
-        if crop_filter_temp ~= nil and source ~= nil then
+        if CROP_FILTER.conversion ~= nil and DC_SOURCE ~= nil then
             log("Conversion crop filter removed")
-            obs.obs_source_filter_remove(source, crop_filter_temp)
-            obs.obs_source_release(crop_filter_temp)
-            crop_filter_temp = nil
+            OBS.obs_source_filter_remove(DC_SOURCE, CROP_FILTER.conversion)
+            OBS.obs_source_release(CROP_FILTER.conversion)
+            CROP_FILTER.conversion = nil
         end
 
-        if crop_filter_settings ~= nil then
-            obs.obs_data_release(crop_filter_settings)
-            crop_filter_settings = nil
+        if CROP_FILTER_SETTINGS ~= nil then
+            OBS.obs_data_release(CROP_FILTER_SETTINGS)
+            CROP_FILTER_SETTINGS = nil
         end
 
-        if sceneitem_info_orig ~= nil then
-            log("Transform info reset back to original")
-            obs.obs_sceneitem_get_info(sceneitem, sceneitem_info_orig)
-            sceneitem_info_orig = nil
-        end
-
-        if sceneitem_crop_orig ~= nil then
-            log("Transform crop reset back to original")
-            obs.obs_sceneitem_set_crop(sceneitem, sceneitem_crop_orig)
-            sceneitem_crop_orig = nil
-        end
-
-        obs.obs_sceneitem_release(sceneitem)
-        sceneitem = nil
+        toggle_sceneitem_change_listener(false)
+        OBS.obs_sceneitem_release(SCENEITEM)
+        SCENEITEM = nil
     end
 
-    if source ~= nil then
-        obs.obs_source_release(source)
-        source = nil
+    if DC_SOURCE ~= nil then
+        OBS.obs_source_release(DC_SOURCE)
+        DC_SOURCE = nil
     end
 end
 
@@ -475,323 +511,342 @@ end
 function refresh_sceneitem(find_newest)
     -- TODO: Figure out why we need to get the size from the named source during update instead of via the sceneitem source
     local source_raw = { width = 0, height = 0 }
+    local function find_scene_item_by_name(root_scene)
+        local queue = {}
+        table.insert(queue, root_scene)
 
-    if find_newest then
+        while #queue > 0 do
+            local s = table.remove(queue, 1)
+            log("Looking in scene '" .. OBS.obs_source_get_name(OBS.obs_scene_get_source(s)) .. "'")
+
+            -- Check if the current scene has the target scene item
+            local found = OBS.obs_scene_find_source(s, SETTINGS.dc_source_name)
+            if found ~= nil then
+                log("Found sceneitem '" .. SETTINGS.dc_source_name .. "'")
+                OBS.obs_sceneitem_addref(found)
+                return found
+            end
+
+            -- If the current scene has nested scenes, enqueue them for later examination
+            local all_items = OBS.obs_scene_enum_items(s)
+            if all_items then
+                for _, item in pairs(all_items) do
+                    local nested = OBS.obs_sceneitem_get_source(item)
+                    if nested ~= nil then
+                        if OBS.obs_source_is_scene(nested) then
+                            local nested_scene = OBS.obs_scene_from_source(nested)
+                            table.insert(queue, nested_scene)
+                        elseif OBS.obs_source_is_group(nested) then
+                            local nested_scene = OBS.obs_group_from_source(nested)
+                            table.insert(queue, nested_scene)
+                        end
+                    end
+                end
+                OBS.sceneitem_list_release(all_items)
+            end
+        end
+
+        return nil
+    end
+
+    local function release_and_refresh()
         -- Release the current sceneitem now that we are replacing it
         release_sceneitem()
 
         -- Quit early if we are using no zoom source
         -- This allows users to reset the crop data back to the original,
         -- update it, and then force the conversion to happen by re-selecting it.
-        if source_name == "obs-zoom-to-mouse-none" then
-            return
+        if SETTINGS.dc_source_name == "obs-zoom-to-mouse-none" then
+            return false
         end
 
         -- Get a matching source we can use for zooming in the current scene
-        log("Finding sceneitem for Zoom Source '" .. source_name .. "'")
-        if source_name ~= nil then
-            source = obs.obs_get_source_by_name(source_name)
-            if source ~= nil then
-                -- Get the source size, for some reason this works during load but the sceneitem source doesn't
-                source_raw.width = obs.obs_source_get_width(source)
-                source_raw.height = obs.obs_source_get_height(source)
+        log("Finding sceneitem for Zoom Source '" .. SETTINGS.dc_source_name .. "'")
+        if SETTINGS.dc_source_name == nil then
+            return true
+        end
 
-                -- Get the current scene
-                local scene_source = obs.obs_frontend_get_current_scene()
-                if scene_source ~= nil then
-                    local function find_scene_item_by_name(root_scene)
-                        local queue = {}
-                        table.insert(queue, root_scene)
+        DC_SOURCE = OBS.obs_get_source_by_name(SETTINGS.dc_source_name)
+        if DC_SOURCE == nil then
+            return true
+        end
 
-                        while #queue > 0 do
-                            local s = table.remove(queue, 1)
-                            log("Looking in scene '" .. obs.obs_source_get_name(obs.obs_scene_get_source(s)) .. "'")
+        -- Get the source size, for some reason this works during load but the sceneitem source doesn't
+        source_raw.width = OBS.obs_source_get_width(DC_SOURCE)
+        source_raw.height = OBS.obs_source_get_height(DC_SOURCE)
 
-                            -- Check if the current scene has the target scene item
-                            local found = obs.obs_scene_find_source(s, source_name)
-                            if found ~= nil then
-                                log("Found sceneitem '" .. source_name .. "'")
-                                obs.obs_sceneitem_addref(found)
-                                return found
-                            end
+        -- Get the current scene
+        local scene_source = OBS.obs_frontend_get_current_scene()
+        if scene_source ~= nil then
 
-                            -- If the current scene has nested scenes, enqueue them for later examination
-                            local all_items = obs.obs_scene_enum_items(s)
-                            if all_items then
-                                for _, item in pairs(all_items) do
-                                    local nested = obs.obs_sceneitem_get_source(item)
-                                    if nested ~= nil then
-                                        if obs.obs_source_is_scene(nested) then
-                                            local nested_scene = obs.obs_scene_from_source(nested)
-                                            table.insert(queue, nested_scene)
-                                        elseif obs.obs_source_is_group(nested) then
-                                            local nested_scene = obs.obs_group_from_source(nested)
-                                            table.insert(queue, nested_scene)
-                                        end
-                                    end
-                                end
-                                obs.sceneitem_list_release(all_items)
-                            end
-                        end
+            -- Find the sceneitem for the source_name by looking through all the items
+            -- We start at the current scene and use a BFS to look into any nested scenes
+            local current = OBS.obs_scene_from_source(scene_source)
+            SCENEITEM = find_scene_item_by_name(current)
+            toggle_sceneitem_change_listener(true)
 
-                        return nil
-                    end
+            OBS.obs_source_release(scene_source)
+        end
 
-                    -- Find the sceneitem for the source_name by looking through all the items
-                    -- We start at the current scene and use a BFS to look into any nested scenes
-                    local current = obs.obs_scene_from_source(scene_source)
-                    sceneitem = find_scene_item_by_name(current)
+        if not SCENEITEM then
+            log(
+                "WARNING: Source not part of the current scene hierarchy.\n"
+                    .. "         Try selecting a different zoom source or switching scenes."
+            )
+            OBS.obs_sceneitem_release(SCENEITEM)
+            OBS.obs_source_release(DC_SOURCE)
 
-                    obs.obs_source_release(scene_source)
-                end
+            SCENEITEM = nil
+            DC_SOURCE = nil
+            return false
+        end
 
-                if not sceneitem then
-                    log("WARNING: Source not part of the current scene hierarchy.\n" ..
-                        "         Try selecting a different zoom source or switching scenes.")
-                    obs.obs_sceneitem_release(sceneitem)
-                    obs.obs_source_release(source)
+        return true
+    end
 
-                    sceneitem = nil
-                    source = nil
-                    return
-                end
-            end
+    if find_newest then
+        if not release_and_refresh() then
+            return
         end
     end
 
-    if not monitor_info then
-        monitor_info = get_monitor_info(source)
+    if not MONITOR_INFO then
+        MONITOR_INFO = get_monitor_info(DC_SOURCE)
     end
 
-    local is_non_display_capture = not is_display_capture(source)
-    if is_non_display_capture then
-        if not use_monitor_override then
-            log("ERROR: Selected Zoom Source is not a display capture source.\n" ..
-                "       You MUST enable 'Set manual source position' and set the correct override values for size and position.")
-        end
+    local use = should_use_source(DC_SOURCE)
+    if not use and not SETTINGS.use_monitor_override then
+        log("ERROR: Selected Zoom Source is not a display capture source.\n" ..
+            "       You MUST enable 'Set manual source position' and set the correct override values for size and position.")
     end
 
-    if sceneitem ~= nil then
-        -- Capture the original settings so we can restore them later
-        sceneitem_info_orig = obs.obs_transform_info()
-        obs.obs_sceneitem_get_info(sceneitem, sceneitem_info_orig)
+    if SCENEITEM == nil then
+        return
+    end
 
-        sceneitem_crop_orig = obs.obs_sceneitem_crop()
-        obs.obs_sceneitem_get_crop(sceneitem, sceneitem_crop_orig)
+    -- Capture the original settings so we can restore them later
+    SCENEITEM_INFO.original = OBS.obs_transform_info()
+    OBS.obs_sceneitem_get_info(SCENEITEM, SCENEITEM_INFO.original)
 
-        sceneitem_info = obs.obs_transform_info()
-        obs.obs_sceneitem_get_info(sceneitem, sceneitem_info)
+    SCENEITEM_INFO.current = OBS.obs_transform_info()
+    OBS.obs_sceneitem_get_info(SCENEITEM, SCENEITEM_INFO.current)
 
-        sceneitem_crop = obs.obs_sceneitem_crop()
-        obs.obs_sceneitem_get_crop(sceneitem, sceneitem_crop)
+    SCENEITEM_CROP = OBS.obs_sceneitem_crop()
+    OBS.obs_sceneitem_get_crop(SCENEITEM, SCENEITEM_CROP)
 
-        if is_non_display_capture then
-            -- Non-Display Capture sources don't correctly report crop values
-            sceneitem_crop_orig.left = 0
-            sceneitem_crop_orig.top = 0
-            sceneitem_crop_orig.right = 0
-            sceneitem_crop_orig.bottom = 0
-        end
+    -- Get the current source size (this will be the value after any applied crop filters)
+    if not DC_SOURCE then
+        log("ERROR: Could not get source for sceneitem (" .. SETTINGS.dc_source_name .. ")")
+    end
 
-        -- Get the current source size (this will be the value after any applied crop filters)
-        if not source then
-            log("ERROR: Could not get source for sceneitem (" .. source_name .. ")")
-        end
+    -- TODO: Figure out why we need this fallback code
+    local source_width = OBS.obs_source_get_base_width(DC_SOURCE)
+    local source_height = OBS.obs_source_get_base_height(DC_SOURCE)
 
-        -- TODO: Figure out why we need this fallback code
-        local source_width = obs.obs_source_get_base_width(source)
-        local source_height = obs.obs_source_get_base_height(source)
+    if source_width == 0 then
+        source_width = source_raw.width
+    end
+    if source_height == 0 then
+        source_height = source_raw.height
+    end
 
-        if source_width == 0 then
-            source_width = source_raw.width
-        end
-        if source_height == 0 then
-            source_height = source_raw.height
-        end
-
-        if source_width == 0 or source_height == 0 then
-            if monitor_info ~= nil and monitor_info.width > 0 and monitor_info.height > 0 then
-                log("WARNING: Something went wrong determining source size.\n" ..
-                    "         Using source size from info: " .. monitor_info.width .. ", " .. monitor_info.height)
-                source_width = monitor_info.width
-                source_height = monitor_info.height
-            else
-                log("ERROR: Something went wrong determining source size.\n" ..
-                "       Try using the 'Set manual source position' option and adding override values")
-            end
+    if source_width == 0 or source_height == 0 then
+        if MONITOR_INFO ~= nil and MONITOR_INFO.width > 0 and MONITOR_INFO.height > 0 then
+            log("WARNING: Something went wrong determining source size.\n" ..
+                "         Using source size from info: " .. MONITOR_INFO.width .. ", " .. MONITOR_INFO.height)
+            source_width = MONITOR_INFO.width
+            source_height = MONITOR_INFO.height
         else
-            log("Using source size: " .. source_width .. ", " .. source_height)
+            log("ERROR: Something went wrong determining source size.\n" ..
+            "       Try using the 'Set manual source position' option and adding override values")
         end
-
-        -- Convert the current transform into one we can correctly modify for zooming
-        -- Ideally the user just has a valid one set and we don't have to change anything because this might not work 100% of the time
-        if sceneitem_info.bounds_type == obs.OBS_BOUNDS_NONE then
-            sceneitem_info.bounds_type = obs.OBS_BOUNDS_SCALE_INNER
-            sceneitem_info.bounds_alignment = 5 -- (5 == OBS_ALIGN_TOP | OBS_ALIGN_LEFT) (0 == OBS_ALIGN_CENTER)
-            sceneitem_info.bounds.x = source_width * sceneitem_info.scale.x
-            sceneitem_info.bounds.y = source_height * sceneitem_info.scale.y
-
-            obs.obs_sceneitem_set_info(sceneitem, sceneitem_info)
-
-            log("WARNING: Found existing non-boundingbox transform. This may cause issues with zooming.\n" ..
-                "         Settings have been auto converted to a bounding box scaling transfrom instead.\n" ..
-                "         If you have issues with your layout consider making the transform use a bounding box manually.")
-        end
-
-        -- Get information about any existing crop filters (that aren't ours)
-        zoom_info.source_crop_filter = { x = 0, y = 0, w = 0, h = 0 }
-        local found_crop_filter = false
-        local filters = obs.obs_source_enum_filters(source)
-        if filters ~= nil then
-            for k, v in pairs(filters) do
-                local id = obs.obs_source_get_id(v)
-                if id == "crop_filter" then
-                    local name = obs.obs_source_get_name(v)
-                    if name ~= CROP_FILTER_NAME and name ~= "temp_" .. CROP_FILTER_NAME then
-                        found_crop_filter = true
-                        local settings = obs.obs_source_get_settings(v)
-                        if settings ~= nil then
-                            if not obs.obs_data_get_bool(settings, "relative") then
-                                zoom_info.source_crop_filter.x =
-                                    zoom_info.source_crop_filter.x + obs.obs_data_get_int(settings, "left")
-                                zoom_info.source_crop_filter.y =
-                                    zoom_info.source_crop_filter.y + obs.obs_data_get_int(settings, "top")
-                                zoom_info.source_crop_filter.w =
-                                    zoom_info.source_crop_filter.w + obs.obs_data_get_int(settings, "cx")
-                                zoom_info.source_crop_filter.h =
-                                    zoom_info.source_crop_filter.h + obs.obs_data_get_int(settings, "cy")
-                                log("Found existing non-relative crop/pad filter (" ..
-                                    name ..
-                                    "). Applying settings " .. format_table(zoom_info.source_crop_filter))
-                            else
-                                log("WARNING: Found existing relative crop/pad filter (" .. name .. ").\n" ..
-                                    "         This will cause issues with zooming. Convert to relative settings instead.")
-                            end
-                            obs.obs_data_release(settings)
-                        end
-                    end
-                end
-            end
-
-            obs.source_list_release(filters)
-        end
-
-        -- If the user has a transform crop set, we need to convert it into a crop filter so that it works correctly with zooming
-        -- Ideally the user does this manually and uses a crop filter instead of the transfrom crop because this might not work 100% of the time
-        if not found_crop_filter and (sceneitem_crop_orig.left ~= 0 or sceneitem_crop_orig.top ~= 0 or sceneitem_crop_orig.right ~= 0 or sceneitem_crop_orig.bottom ~= 0) then
-            log("Creating new crop filter")
-
-            -- Update the source size
-            source_width = source_width - (sceneitem_crop_orig.left + sceneitem_crop_orig.right)
-            source_height = source_height - (sceneitem_crop_orig.top + sceneitem_crop_orig.bottom)
-
-            -- Update the source crop filter now that we will be using one
-            zoom_info.source_crop_filter.x = sceneitem_crop_orig.left
-            zoom_info.source_crop_filter.y = sceneitem_crop_orig.top
-            zoom_info.source_crop_filter.w = source_width
-            zoom_info.source_crop_filter.h = source_height
-
-            -- Add a new crop filter that emulates the existing transform crop
-            local settings = obs.obs_data_create()
-            obs.obs_data_set_bool(settings, "relative", false)
-            obs.obs_data_set_int(settings, "left", zoom_info.source_crop_filter.x)
-            obs.obs_data_set_int(settings, "top", zoom_info.source_crop_filter.y)
-            obs.obs_data_set_int(settings, "cx", zoom_info.source_crop_filter.w)
-            obs.obs_data_set_int(settings, "cy", zoom_info.source_crop_filter.h)
-            crop_filter_temp = obs.obs_source_create_private("crop_filter", "temp_" .. CROP_FILTER_NAME, settings)
-            obs.obs_source_filter_add(source, crop_filter_temp)
-            obs.obs_data_release(settings)
-
-            -- Clear out the transform crop
-            sceneitem_crop.left = 0
-            sceneitem_crop.top = 0
-            sceneitem_crop.right = 0
-            sceneitem_crop.bottom = 0
-            obs.obs_sceneitem_set_crop(sceneitem, sceneitem_crop)
-
-            log("WARNING: Found existing transform crop. This may cause issues with zooming.\n" ..
-                "         Settings have been auto converted to a relative crop/pad filter instead.\n" ..
-                "         If you have issues with your layout consider making the filter manually.")
-        elseif found_crop_filter then
-            source_width = zoom_info.source_crop_filter.w
-            source_height = zoom_info.source_crop_filter.h
-        end
-
-        -- Get the rest of the information needed to correctly zoom
-        zoom_info.source_size = { width = source_width, height = source_height }
-        zoom_info.source_crop = {
-            l = sceneitem_crop_orig.left,
-            t = sceneitem_crop_orig.top,
-            r = sceneitem_crop_orig.right,
-            b = sceneitem_crop_orig.bottom
-        }
-        --log("Transform updated. Using following values -\n" .. format_table(zoom_info))
-
-        -- Set the initial the crop filter data to match the source
-        crop_filter_info_orig = { x = 0, y = 0, w = zoom_info.source_size.width, h = zoom_info.source_size.height }
-        crop_filter_info = {
-            x = crop_filter_info_orig.x,
-            y = crop_filter_info_orig.y,
-            w = crop_filter_info_orig.w,
-            h = crop_filter_info_orig.h
-        }
-
-        -- Get or create our crop filter that we change during zoom
-        crop_filter = obs.obs_source_get_filter_by_name(source, CROP_FILTER_NAME)
-        if crop_filter == nil then
-            crop_filter_settings = obs.obs_data_create()
-            obs.obs_data_set_bool(crop_filter_settings, "relative", false)
-            crop_filter = obs.obs_source_create_private("crop_filter", CROP_FILTER_NAME, crop_filter_settings)
-            obs.obs_source_filter_add(source, crop_filter)
-        else
-            crop_filter_settings = obs.obs_source_get_settings(crop_filter)
-        end
-
-        obs.obs_source_filter_set_order(source, crop_filter, obs.OBS_ORDER_MOVE_BOTTOM)
-        set_crop_settings(crop_filter_info_orig)
+    else
+        log("Using source size: " .. source_width .. ", " .. source_height)
     end
+
+    -- Convert the current transform into one we can correctly modify for zooming
+    -- Ideally the user just has a valid one set and we don't have to change anything because this might not work 100% of the time
+    ZOOM_INFO.transform_bounds = SCENEITEM_INFO.current.bounds
+    SCENEITEM_INFO.current.bounds_type = OBS.OBS_BOUNDS_SCALE_OUTER
+    -- SCENEITEM_INFO.current.bounds_alignment = 0 -- (5 == OBS_ALIGN_TOP | OBS_ALIGN_LEFT) (0 == OBS_ALIGN_CENTER)
+
+    OBS.obs_sceneitem_set_info(SCENEITEM, SCENEITEM_INFO.current)
+
+    log("WARNING: Found existing non-boundingbox transform. This may cause issues with zooming.\n" ..
+        "         Settings have been auto converted to a bounding box scaling transfrom instead.\n" ..
+        "         If you have issues with your layout consider making the transform use a bounding box manually.")
+
+    -- Get information about any existing crop filters (that aren't ours)
+    ZOOM_INFO.crop_sums = { x = 0, y = 0, w = 0, h = 0 }
+    local found_crop_filter = false
+    local function iterate_filter(crop_sums, filter)
+        local id = OBS.obs_source_get_id(filter)
+        if id ~= "crop_filter" then
+            return false
+        end
+        local name = OBS.obs_source_get_name(filter)
+        if name == CROP_FILTER_NAME then
+            return false
+        end
+        if name == "temp_" .. CROP_FILTER_NAME then
+            return false
+        end
+
+        wrap_managed(OBS.obs_source_get_settings(filter), OBS.obs_data_release, function(settings)
+            if not OBS.obs_data_get_bool(settings, "relative") then
+                log("WARNING: Found existing relative crop/pad filter (" .. name .. ").\n" ..
+                    "         This will cause issues with zooming. Convert to relative settings instead.")
+                return
+            end
+            crop_sums.x = crop_sums.x + OBS.obs_data_get_int(settings, "left")
+            crop_sums.y = crop_sums.y + OBS.obs_data_get_int(settings, "top")
+            crop_sums.w = crop_sums.w + OBS.obs_data_get_int(settings, "cx")
+            crop_sums.h = crop_sums.h + OBS.obs_data_get_int(settings, "cy")
+            log("Found existing non-relative crop/pad filter (" ..
+                name ..
+                "). Applying settings " .. format_table(crop_sums))
+        end)
+        return true
+    end
+
+    wrap_managed(OBS.obs_source_enum_filters(DC_SOURCE), OBS.source_list_release, function(filters)
+        for _, v in pairs(filters) do
+            if iterate_filter(ZOOM_INFO.crop_sums, v) then
+                found_crop_filter = true
+            end
+        end
+    end)
+
+    -- If the user has transform crops set, we need to convert it (or them) into a crop filter so that it works correctly with zooming
+    -- Ideally the user does this manually and uses a crop filter instead of the transfrom crop because this might not work 100% of the time
+    if not found_crop_filter and (SCENEITEM_CROP.left ~= 0 or SCENEITEM_CROP.top ~= 0 or SCENEITEM_CROP.right ~= 0 or SCENEITEM_CROP.bottom ~= 0) then
+        log("Creating new crop filter")
+
+        -- Update the source size
+        source_width = source_width - (SCENEITEM_CROP.left + SCENEITEM_CROP.right)
+        source_height = source_height - (SCENEITEM_CROP.top + SCENEITEM_CROP.bottom)
+
+        -- Update the source crop filter now that we will be using one
+        ZOOM_INFO.crop_sums.x = SCENEITEM_CROP.left
+        ZOOM_INFO.crop_sums.y = SCENEITEM_CROP.top
+        ZOOM_INFO.crop_sums.w = source_width
+        ZOOM_INFO.crop_sums.h = source_height
+
+        -- Add a new crop filter that emulates the existing transform crop
+        local settings = OBS.obs_data_create()
+        OBS.obs_data_set_bool(settings, "relative", false)
+        OBS.obs_data_set_int(settings, "left", ZOOM_INFO.crop_sums.x)
+        OBS.obs_data_set_int(settings, "top", ZOOM_INFO.crop_sums.y)
+        OBS.obs_data_set_int(settings, "cx", ZOOM_INFO.crop_sums.w)
+        OBS.obs_data_set_int(settings, "cy", ZOOM_INFO.crop_sums.h)
+        CROP_FILTER.conversion = OBS.obs_source_create_private("crop_filter", "temp_" .. CROP_FILTER_NAME, settings)
+        OBS.obs_source_filter_add(DC_SOURCE, CROP_FILTER.conversion)
+        OBS.obs_data_release(settings)
+
+        -- Clear out the transform crop
+        SCENEITEM_CROP.left = 0
+        SCENEITEM_CROP.top = 0
+        SCENEITEM_CROP.right = 0
+        SCENEITEM_CROP.bottom = 0
+        OBS.obs_sceneitem_set_crop(SCENEITEM, SCENEITEM_CROP)
+
+        log("WARNING: Found existing transform crop. This may cause issues with zooming.\n" ..
+            "         Settings have been auto converted to a relative crop/pad filter instead.\n" ..
+            "         If you have issues with your layout consider making the filter manually.")
+    elseif found_crop_filter then
+        source_width = ZOOM_INFO.crop_sums.w
+        source_height = ZOOM_INFO.crop_sums.h
+    end
+
+    -- Get the rest of the information needed to correctly zoom
+    ZOOM_INFO.source_size = { width = source_width, height = source_height }
+    ZOOM_INFO.source_crop = {
+        l = SCENEITEM_CROP.left,
+        t = SCENEITEM_CROP.top,
+        r = SCENEITEM_CROP.right,
+        b = SCENEITEM_CROP.bottom,
+    }
+    --log("Transform updated. Using following values -\n" .. format_table(zoom_info))
+
+    -- Set the initial the crop filter data to match the source
+    CROP_FILTER_INFO.original = {
+        x = 0,
+        y = 0,
+        w = ZOOM_INFO.source_size.width,
+        h = ZOOM_INFO.source_size.height,
+    }
+    CROP_FILTER_INFO.current = copy_table(CROP_FILTER_INFO.original)
+
+    -- Get or create our crop filter that we change during zoom
+    CROP_FILTER.zoom = OBS.obs_source_get_filter_by_name(DC_SOURCE, CROP_FILTER_NAME)
+    if CROP_FILTER.zoom == nil then
+        CROP_FILTER_SETTINGS = OBS.obs_data_create()
+        OBS.obs_data_set_bool(CROP_FILTER_SETTINGS, "relative", false)
+        CROP_FILTER.zoom = OBS.obs_source_create_private("crop_filter", CROP_FILTER_NAME, CROP_FILTER_SETTINGS)
+        OBS.obs_source_filter_add(DC_SOURCE, CROP_FILTER.zoom)
+    else
+        CROP_FILTER_SETTINGS = OBS.obs_source_get_settings(CROP_FILTER.zoom)
+    end
+
+    OBS.obs_source_filter_set_order(DC_SOURCE, CROP_FILTER.zoom, OBS.OBS_ORDER_MOVE_BOTTOM)
+    set_crop_settings(CROP_FILTER_INFO.original)
 end
 
 ---
 -- Get the target position that we will attempt to zoom towards
----@param zoom any
+---@param zoom_info any
 ---@return table
-function get_target_position(zoom)
-    local mouse = get_mouse_pos()
+function get_target_position(zoom_info)
+    local mouse_pos = get_mouse_pos()
 
     -- If we have monitor information then we can offset the mouse by the top-left of the monitor position
     -- This is because the display-capture source assumes top-left is 0,0 but the mouse uses the total desktop area,
     -- so a second monitor might start at x:1920, y:0 for example, so when we click at 1920,0 we want it to look like we clicked 0,0 on the source.
-    if monitor_info then
-        mouse.x = mouse.x - monitor_info.x
-        mouse.y = mouse.y - monitor_info.y
+    if MONITOR_INFO then
+        mouse_pos.x = mouse_pos.x - MONITOR_INFO.x
+        mouse_pos.y = mouse_pos.y - MONITOR_INFO.y
     end
 
     -- Now offset the mouse by the crop top-left because if we cropped 100px off of the display clicking at 100,0 should really be the top-left 0,0
-    mouse.x = mouse.x - zoom.source_crop_filter.x
-    mouse.y = mouse.y - zoom.source_crop_filter.y
+    mouse_pos.x = mouse_pos.x - zoom_info.crop_sums.x
+    mouse_pos.y = mouse_pos.y - zoom_info.crop_sums.y
 
     -- If the source uses a different scale to the display, apply that now.
     -- This can happen with cloned sources, where it is cloning a scene that has a full screen display.
     -- The display will be the full desktop pixel size, but the cloned scene will be scaled down to the canvas,
     -- so we need to scale down the mouse movement to match
-    if monitor_info and monitor_info.scale_x and monitor_info.scale_y then
-        mouse.x = mouse.x * monitor_info.scale_x
-        mouse.y = mouse.y * monitor_info.scale_y
+    if MONITOR_INFO and MONITOR_INFO.scale_x and MONITOR_INFO.scale_y then
+        mouse_pos.x = mouse_pos.x * MONITOR_INFO.scale_x
+        mouse_pos.y = mouse_pos.y * MONITOR_INFO.scale_y
+    end
+
+    local zoom_factor = zoom_info.zoom_to
+    if MONITOR_INFO then
+    log(string.format("%f", math.max(
+        (ZOOM_INFO.transform_bounds.x / MONITOR_INFO.width),
+        (ZOOM_INFO.transform_bounds.y / MONITOR_INFO.height))))
+        zoom_factor = zoom_factor / math.max(
+            (ZOOM_INFO.transform_bounds.x / MONITOR_INFO.width),
+            (ZOOM_INFO.transform_bounds.y / MONITOR_INFO.height))
     end
 
     -- Get the new size after we zoom
     -- Remember that because we are using a crop/pad filter making the size smaller (dividing by zoom) means that we see less of the image
     -- in the same amount of space making it look bigger (aka zoomed in)
     local new_size = {
-        width = zoom.source_size.width / zoom.zoom_to,
-        height = zoom.source_size.height / zoom.zoom_to
+        width = zoom_info.source_size.width / zoom_factor,
+        height = zoom_info.source_size.height / zoom_factor,
     }
+
+    -- If should keep shape, use aspect ratio to get new width
+    if SETTINGS.keep_shape then
+        new_size.width = new_size.height * SETTINGS.shape_aspect
+    end
 
     -- New offset for the crop/pad filter is whereever we clicked minus half the size, so that the clicked point because the new center
     local pos = {
-        x = mouse.x - new_size.width * 0.5,
-        y = mouse.y - new_size.height * 0.5
+        x = mouse_pos.x - new_size.width * 0.5,
+        y = mouse_pos.y - new_size.height * 0.5,
     }
 
     -- Create the full crop results
@@ -803,222 +858,241 @@ function get_target_position(zoom)
     }
 
     -- Keep the zoom in bounds of the source so that we never show something outside that user is trying to hide with existing crop settings
-    crop.x = math.floor(clamp(0, (zoom.source_size.width - new_size.width), crop.x))
-    crop.y = math.floor(clamp(0, (zoom.source_size.height - new_size.height), crop.y))
+    if SETTINGS.clamp_to_edges then
+        crop.x = math.floor(clamp(0, (zoom_info.source_size.width - new_size.width), crop.x))
+        crop.y = math.floor(clamp(0, (zoom_info.source_size.height - new_size.height), crop.y))
+    end
 
-    return { crop = crop, raw_center = mouse, clamped_center = { x = math.floor(crop.x + crop.w * 0.5), y = math.floor(crop.y + crop.h * 0.5) } }
+    return {
+        crop = crop, 
+        raw_center = mouse_pos,
+        clamped_center = {
+             x = math.floor(crop.x + crop.w * 0.5), 
+             y = math.floor(crop.y + crop.h * 0.5),
+         },
+    }
 end
 
 function on_toggle_follow(pressed)
     if pressed then
-        is_following_mouse = not is_following_mouse
-        log("Tracking mouse is " .. (is_following_mouse and "on" or "off"))
+        IS_FOLLOWING_MOUSE = not IS_FOLLOWING_MOUSE
+        log("Tracking mouse is " .. (IS_FOLLOWING_MOUSE and "on" or "off"))
 
-        if is_following_mouse and zoom_state == ZoomState.ZoomedIn then
+        if IS_FOLLOWING_MOUSE and ZOOM_STATE == ZoomState.ZoomedIn then
             -- Since we are zooming we need to start the timer for the animation and tracking
-            if is_timer_running == false then
-                is_timer_running = true
-                local timer_interval = math.floor(obs.obs_get_frame_interval_ns() / 1000000)
-                obs.timer_add(on_timer, timer_interval)
+            if IS_TIMER_RUNNING == false then
+                IS_TIMER_RUNNING = true
+                local timer_interval = math.floor(OBS.obs_get_frame_interval_ns() / 1000000)
+                OBS.timer_add(on_timer, timer_interval)
             end
         end
     end
 end
 
-function on_toggle_zoom(pressed)
-    if pressed then
-        -- Check if we are in a safe state to zoom
-        if zoom_state == ZoomState.ZoomedIn or zoom_state == ZoomState.None then
-            if zoom_state == ZoomState.ZoomedIn then
-                log("Zooming out")
-                -- To zoom out, we set the target back to whatever it was originally
-                zoom_state = ZoomState.ZoomingOut
-                zoom_time = 0
-                locked_center = nil
-                locked_last_pos = nil
-                zoom_target = { crop = crop_filter_info_orig, c = sceneitem_crop_orig }
-                if is_following_mouse then
-                    is_following_mouse = false
-                    log("Tracking mouse is off (due to zoom out)")
-                end
-            else
-                log("Zooming in")
-                -- To zoom in, we get a new target based on where the mouse was when zoom was clicked
-                zoom_state = ZoomState.ZoomingIn
-                zoom_info.zoom_to = zoom_value
-                zoom_time = 0
-                locked_center = nil
-                locked_last_pos = nil
-                zoom_target = get_target_position(zoom_info)
-            end
+function on_toggle_zoom(pressed, force_value)
+    if not pressed and not force_value then
+        return
+    end
 
-            -- Since we are zooming we need to start the timer for the animation and tracking
-            if is_timer_running == false then
-                is_timer_running = true
-                local timer_interval = math.floor(obs.obs_get_frame_interval_ns() / 1000000)
-                obs.timer_add(on_timer, timer_interval)
+    -- Check if we are in a safe state to zoom
+    if ZOOM_STATE == ZoomState.ZoomedIn or ZOOM_STATE == ZoomState.None then
+        if ZOOM_STATE == ZoomState.ZoomedIn then
+            log("Zooming out")
+            -- To zoom out, we set the target back to whatever it was originally
+            ZOOM_STATE = ZoomState.ZoomingOut
+            ZOOM_TIME = 0
+            LOCKED_CENTER = nil
+            LOCKED_LAST_POS = nil
+            ZOOM_TARGET = { crop = CROP_FILTER_INFO.original, c = SCENEITEM_CROP }
+            if IS_FOLLOWING_MOUSE then
+                IS_FOLLOWING_MOUSE = false
+                log("Tracking mouse is off (due to zoom out)")
             end
+        else
+            -- If the desktop source was scaled, let's adjust the scaling so that items on the monitor remain the same absolute size
+
+            log("Zooming in")
+            -- To zoom in, we get a new target based on where the mouse was when zoom was clicked
+            SETTINGS.shape_aspect = ZOOM_INFO.transform_bounds.x / ZOOM_INFO.transform_bounds.y
+            ZOOM_STATE = ZoomState.ZoomingIn
+            ZOOM_INFO.zoom_to = SETTINGS.zoom_value
+            ZOOM_TIME = 0
+            LOCKED_CENTER = nil
+            LOCKED_LAST_POS = nil
+            ZOOM_TARGET = get_target_position(ZOOM_INFO)
+        end
+
+        -- Since we are zooming we need to start the timer for the animation and tracking
+        if IS_TIMER_RUNNING == false then
+            IS_TIMER_RUNNING = true
+            local timer_interval = math.floor(OBS.obs_get_frame_interval_ns() / 1000000)
+            OBS.timer_add(on_timer, timer_interval)
         end
     end
 end
 
 function on_timer()
-    if crop_filter_info ~= nil and zoom_target ~= nil then
-        -- Update our zoom time that we use for the animation
-        zoom_time = zoom_time + zoom_speed
+    local crop = CROP_FILTER_INFO.current
+    if crop == nil then
+        return
+    end
+    if ZOOM_TARGET == nil then
+        return
+    end
 
-        if zoom_state == ZoomState.ZoomingOut or zoom_state == ZoomState.ZoomingIn then
-            -- When we are doing a zoom animation (in or out) we linear interpolate the crop to the target
-            if zoom_time <= 1 then
-                -- If we have auto-follow turned on, make sure to keep the mouse in the view while we zoom
-                -- This is incase the user is moving the mouse a lot while the animation (which may be slow) is playing
-                if zoom_state == ZoomState.ZoomingIn and use_auto_follow_mouse then
-                    zoom_target = get_target_position(zoom_info)
-                end
-                crop_filter_info.x = lerp(crop_filter_info.x, zoom_target.crop.x, ease_in_out(zoom_time))
-                crop_filter_info.y = lerp(crop_filter_info.y, zoom_target.crop.y, ease_in_out(zoom_time))
-                crop_filter_info.w = lerp(crop_filter_info.w, zoom_target.crop.w, ease_in_out(zoom_time))
-                crop_filter_info.h = lerp(crop_filter_info.h, zoom_target.crop.h, ease_in_out(zoom_time))
-                set_crop_settings(crop_filter_info)
+    -- Update our zoom time that we use for the animation
+    ZOOM_TIME = ZOOM_TIME + SETTINGS.zoom_speed
+
+    if ZOOM_STATE == ZoomState.ZoomingOut or ZOOM_STATE == ZoomState.ZoomingIn then
+        -- When we are doing a zoom animation (in or out) we linear interpolate the crop to the target
+        if ZOOM_TIME <= 1 then
+            -- If we have auto-follow turned on, make sure to keep the mouse in the view while we zoom
+            -- This is incase the user is moving the mouse a lot while the animation (which may be slow) is playing
+            if ZOOM_STATE == ZoomState.ZoomingIn and SETTINGS.use_auto_follow_mouse then
+                ZOOM_TARGET = get_target_position(ZOOM_INFO)
             end
-        else
-            -- If we are not zooming we only move the x/y to follow the mouse (width/height stay constant)
-            if is_following_mouse then
-                zoom_target = get_target_position(zoom_info)
+            crop.x = lerp(crop.x, ZOOM_TARGET.crop.x, ease_in_out(ZOOM_TIME))
+            crop.y = lerp(crop.y, ZOOM_TARGET.crop.y, ease_in_out(ZOOM_TIME))
+            crop.w = lerp(crop.w, ZOOM_TARGET.crop.w, ease_in_out(ZOOM_TIME))
+            crop.h = lerp(crop.h, ZOOM_TARGET.crop.h, ease_in_out(ZOOM_TIME))
+            set_crop_settings(crop)
+        end
+   
+    -- If we are not zooming we only move the x/y to follow the mouse (width/height stay constant)
+    elseif IS_FOLLOWING_MOUSE then
+        ZOOM_TARGET = get_target_position(ZOOM_INFO)
 
-                local skip_frame = false
-                if not use_follow_outside_bounds then
-                    if zoom_target.raw_center.x < zoom_target.crop.x or
-                        zoom_target.raw_center.x > zoom_target.crop.x + zoom_target.crop.w or
-                        zoom_target.raw_center.y < zoom_target.crop.y or
-                        zoom_target.raw_center.y > zoom_target.crop.y + zoom_target.crop.h then
-                        -- Don't follow the mouse if we are outside the bounds of the source
-                        skip_frame = true
-                    end
+        local skip_frame = false
+        if not SETTINGS.follow_outside_bounds then
+            if ZOOM_TARGET.raw_center.x < ZOOM_TARGET.crop.x or
+                ZOOM_TARGET.raw_center.x > ZOOM_TARGET.crop.x + ZOOM_TARGET.crop.w or
+                ZOOM_TARGET.raw_center.y < ZOOM_TARGET.crop.y or
+                ZOOM_TARGET.raw_center.y > ZOOM_TARGET.crop.y + ZOOM_TARGET.crop.h then
+                -- Don't follow the mouse if we are outside the bounds of the source
+                skip_frame = true
+            end
+        end
+
+        if not skip_frame then
+            -- If we have a locked_center it means we are currently in a locked zone and
+            -- shouldn't track the mouse until it moves out of the area
+            if LOCKED_CENTER ~= nil then
+                local diff = {
+                    x = ZOOM_TARGET.raw_center.x - LOCKED_CENTER.x,
+                    y = ZOOM_TARGET.raw_center.y - LOCKED_CENTER.y
+                }
+
+                local track = {
+                    x = ZOOM_TARGET.crop.w * (0.5 - (SETTINGS.follow_border * 0.01)),
+                    y = ZOOM_TARGET.crop.h * (0.5 - (SETTINGS.follow_border * 0.01))
+                }
+
+                if math.abs(diff.x) > track.x or math.abs(diff.y) > track.y then
+                    -- Cursor moved into the active border area, so resume tracking by clearing out the locked_center
+                    LOCKED_CENTER = nil
+                    LOCKED_LAST_POS = {
+                        x = ZOOM_TARGET.raw_center.x,
+                        y = ZOOM_TARGET.raw_center.y,
+                        diff_x = diff.x,
+                        diff_y = diff.y
+                    }
+                    log("Locked area exited - resume tracking")
                 end
+            end
 
-                if not skip_frame then
-                    -- If we have a locked_center it means we are currently in a locked zone and
-                    -- shouldn't track the mouse until it moves out of the area
-                    if locked_center ~= nil then
-                        local diff = {
-                            x = zoom_target.raw_center.x - locked_center.x,
-                            y = zoom_target.raw_center.y - locked_center.y
-                        }
+            local crop = CROP_FILTER_INFO.current
+            if LOCKED_CENTER == nil and (ZOOM_TARGET.crop.x ~= crop.x or ZOOM_TARGET.crop.y ~= crop.y) then
+                crop.x = lerp(crop.x, ZOOM_TARGET.crop.x, SETTINGS.follow_speed)
+                crop.y = lerp(crop.y, ZOOM_TARGET.crop.y, SETTINGS.follow_speed)
+                set_crop_settings(crop)
 
-                        local track = {
-                            x = zoom_target.crop.w * (0.5 - (follow_border * 0.01)),
-                            y = zoom_target.crop.h * (0.5 - (follow_border * 0.01))
-                        }
+                -- Check to see if the mouse has stopped moving long enough to create a new safe zone
+                if IS_FOLLOWING_MOUSE and LOCKED_CENTER == nil and LOCKED_LAST_POS ~= nil then
+                    local diff = {
+                        x = math.abs(crop.x - ZOOM_TARGET.crop.x),
+                        y = math.abs(crop.y - ZOOM_TARGET.crop.y),
+                        auto_x = ZOOM_TARGET.raw_center.x - LOCKED_LAST_POS.x,
+                        auto_y = ZOOM_TARGET.raw_center.y - LOCKED_LAST_POS.y
+                    }
 
-                        if math.abs(diff.x) > track.x or math.abs(diff.y) > track.y then
-                            -- Cursor moved into the active border area, so resume tracking by clearing out the locked_center
-                            locked_center = nil
-                            locked_last_pos = {
-                                x = zoom_target.raw_center.x,
-                                y = zoom_target.raw_center.y,
-                                diff_x = diff.x,
-                                diff_y = diff.y
-                            }
-                            log("Locked area exited - resume tracking")
+                    LOCKED_LAST_POS.x = ZOOM_TARGET.raw_center.x
+                    LOCKED_LAST_POS.y = ZOOM_TARGET.raw_center.y
+
+                    local lock = false
+                    if math.abs(LOCKED_LAST_POS.diff_x) > math.abs(LOCKED_LAST_POS.diff_y) then
+                        if (diff.auto_x < 0 and LOCKED_LAST_POS.diff_x > 0) or (diff.auto_x > 0 and LOCKED_LAST_POS.diff_x < 0) then
+                            lock = true
+                        end
+                    else
+                        if (diff.auto_y < 0 and LOCKED_LAST_POS.diff_y > 0) or (diff.auto_y > 0 and LOCKED_LAST_POS.diff_y < 0) then
+                            lock = true
                         end
                     end
 
-                    if locked_center == nil and (zoom_target.crop.x ~= crop_filter_info.x or zoom_target.crop.y ~= crop_filter_info.y) then
-                        crop_filter_info.x = lerp(crop_filter_info.x, zoom_target.crop.x, follow_speed)
-                        crop_filter_info.y = lerp(crop_filter_info.y, zoom_target.crop.y, follow_speed)
-                        set_crop_settings(crop_filter_info)
-
-                        -- Check to see if the mouse has stopped moving long enough to create a new safe zone
-                        if is_following_mouse and locked_center == nil and locked_last_pos ~= nil then
-                            local diff = {
-                                x = math.abs(crop_filter_info.x - zoom_target.crop.x),
-                                y = math.abs(crop_filter_info.y - zoom_target.crop.y),
-                                auto_x = zoom_target.raw_center.x - locked_last_pos.x,
-                                auto_y = zoom_target.raw_center.y - locked_last_pos.y
-                            }
-
-                            locked_last_pos.x = zoom_target.raw_center.x
-                            locked_last_pos.y = zoom_target.raw_center.y
-
-                            local lock = false
-                            if math.abs(locked_last_pos.diff_x) > math.abs(locked_last_pos.diff_y) then
-                                if (diff.auto_x < 0 and locked_last_pos.diff_x > 0) or (diff.auto_x > 0 and locked_last_pos.diff_x < 0) then
-                                    lock = true
-                                end
-                            else
-                                if (diff.auto_y < 0 and locked_last_pos.diff_y > 0) or (diff.auto_y > 0 and locked_last_pos.diff_y < 0) then
-                                    lock = true
-                                end
-                            end
-
-                            if (lock and use_follow_auto_lock) or (diff.x <= follow_safezone_sensitivity and diff.y <= follow_safezone_sensitivity) then
-                                -- Make the new center the position of the current camera (which might not be the same as the mouse since we lerp towards it)
-                                locked_center = {
-                                    x = math.floor(crop_filter_info.x + zoom_target.crop.w * 0.5),
-                                    y = math.floor(crop_filter_info.y + zoom_target.crop.h * 0.5)
-                                }
-                                log("Cursor stopped. Tracking locked to " .. locked_center.x .. ", " .. locked_center.y)
-                            end
-                        end
+                    if
+                        (lock and SETTINGS.use_follow_auto_lock) or (
+                            diff.x <= SETTINGS.follow_safezone_sensitivity and
+                            diff.y <= SETTINGS.follow_safezone_sensitivity) then
+                        -- Make the new center the position of the current camera (which might not be the same as the mouse since we lerp towards it)
+                        LOCKED_CENTER = {
+                            x = math.floor(crop.x + ZOOM_TARGET.crop.w * 0.5),
+                            y = math.floor(crop.y + ZOOM_TARGET.crop.h * 0.5)
+                        }
+                        log("Cursor stopped. Tracking locked to " .. LOCKED_CENTER.x .. ", " .. LOCKED_CENTER.y)
                     end
                 end
             end
         end
+    end
 
-        -- Check to see if the animation is over
-        if zoom_time >= 1 then
-            local should_stop_timer = false
-            -- When we finished zooming out we remove the timer
-            if zoom_state == ZoomState.ZoomingOut then
-                log("Zoomed out")
-                zoom_state = ZoomState.None
-                should_stop_timer = true
-            elseif zoom_state == ZoomState.ZoomingIn then
-                log("Zoomed in")
-                zoom_state = ZoomState.ZoomedIn
-                -- If we finished zooming in and we arent tracking the mouse we can also remove the timer
-                should_stop_timer = (not use_auto_follow_mouse) and (not is_following_mouse)
+    -- Check to see if the animation is still running
+    if ZOOM_TIME < 1 then
+        return
+    end
 
-                if use_auto_follow_mouse then
-                    is_following_mouse = true
-                    log("Tracking mouse is " .. (is_following_mouse and "on" or "off") .. " (due to auto follow)")
-                end
+    local should_stop_timer = false
+    -- When we finished zooming out we remove the timer
+    if ZOOM_STATE == ZoomState.ZoomingOut then
+        log("Zoomed out")
+        set_crop_settings(CROP_FILTER_INFO.original)
+        ZOOM_STATE = ZoomState.None
+        should_stop_timer = true
+    elseif ZOOM_STATE == ZoomState.ZoomingIn then
+        log("Zoomed in")
+        ZOOM_STATE = ZoomState.ZoomedIn
+        -- If we finished zooming in and we arent tracking the mouse we can also remove the timer
+        should_stop_timer = (not SETTINGS.use_auto_follow_mouse) and (not IS_FOLLOWING_MOUSE)
 
-                -- We set the current position as the center for the follow safezone
-                if is_following_mouse and follow_border < 50 then
-                    zoom_target = get_target_position(zoom_info)
-                    locked_center = { x = zoom_target.clamped_center.x, y = zoom_target.clamped_center.y }
-                    log("Cursor stopped. Tracking locked to " .. locked_center.x .. ", " .. locked_center.y)
-                end
-            end
-
-            if should_stop_timer then
-                is_timer_running = false
-                obs.timer_remove(on_timer)
-            end
+        if SETTINGS.use_auto_follow_mouse then
+            IS_FOLLOWING_MOUSE = true
+            log("Tracking mouse is " .. (IS_FOLLOWING_MOUSE and "on" or "off") .. " (due to auto follow)")
         end
+    end
+
+    if should_stop_timer then
+        IS_TIMER_RUNNING = false
+        OBS.timer_remove(on_timer)
     end
 end
 
 function on_socket_timer()
-    if not socket_server then
+    if not SOCKET_SERVER then
         return
     end
 
     repeat
-        local data, status = socket_server:receive_from()
+        local data, status = SOCKET_SERVER:receive_from()
         if data then
             local sx, sy = data:match("(-?%d+) (-?%d+)")
             if sx and sy then
                 local x = tonumber(sx, 10)
                 local y = tonumber(sy, 10)
-                if not socket_mouse then
+                if not SOCKET_MOUSE then
                     log("Socket server client connected")
-                    socket_mouse = { x = x, y = y }
+                    SOCKET_MOUSE = { x = x, y = y }
                 else
-                    socket_mouse.x = x
-                    socket_mouse.y = y
+                    SOCKET_MOUSE.x = x
+                    SOCKET_MOUSE.y = y
                 end
             end
         elseif status ~= "timeout" then
@@ -1028,39 +1102,39 @@ function on_socket_timer()
 end
 
 function start_server()
-    if socket_available then
-        local address = socket.find_first_address("*", socket_port)
+    if SOCKET_AVAILABLE then
+        local address = SOCKET.find_first_address("*", SOCKET_PORT)
 
-        socket_server = socket.create("inet", "dgram", "udp")
-        if socket_server ~= nil then
-            socket_server:set_option("reuseaddr", 1)
-            socket_server:set_blocking(false)
-            socket_server:bind(address, socket_port)
-            obs.timer_add(on_socket_timer, socket_poll)
-            log("Socket server listening on port " .. socket_port .. "...")
+        SOCKET_SERVER = SOCKET.create("inet", "dgram", "udp")
+        if SOCKET_SERVER ~= nil then
+            SOCKET_SERVER:set_option("reuseaddr", 1)
+            SOCKET_SERVER:set_blocking(false)
+            SOCKET_SERVER:bind(address, SOCKET_PORT)
+            OBS.timer_add(on_socket_timer, SOCKET_POLL)
+            log("Socket server listening on port " .. SOCKET_PORT .. "...")
         end
     end
 end
 
 function stop_server()
-    if socket_server ~= nil then
+    if SOCKET_SERVER ~= nil then
         log("Socket server stopped")
-        obs.timer_remove(on_socket_timer)
-        socket_server:close()
-        socket_server = nil
-        socket_mouse = nil
+        OBS.timer_remove(on_socket_timer)
+        SOCKET_SERVER:close()
+        SOCKET_SERVER = nil
+        SOCKET_MOUSE = nil
     end
 end
 
 function set_crop_settings(crop)
-    if crop_filter ~= nil and crop_filter_settings ~= nil then
+    if CROP_FILTER.zoom ~= nil and CROP_FILTER_SETTINGS ~= nil then
         -- Call into OBS to update our crop filter with the new settings
         -- I have no idea how slow/expensive this is, so we could potentially only do it if something changes
-        obs.obs_data_set_int(crop_filter_settings, "left", math.floor(crop.x))
-        obs.obs_data_set_int(crop_filter_settings, "top", math.floor(crop.y))
-        obs.obs_data_set_int(crop_filter_settings, "cx", math.floor(crop.w))
-        obs.obs_data_set_int(crop_filter_settings, "cy", math.floor(crop.h))
-        obs.obs_source_update(crop_filter, crop_filter_settings)
+        OBS.obs_data_set_int(CROP_FILTER_SETTINGS, "left", math.floor(crop.x))
+        OBS.obs_data_set_int(CROP_FILTER_SETTINGS, "top", math.floor(crop.y))
+        OBS.obs_data_set_int(CROP_FILTER_SETTINGS, "cx", math.floor(crop.w))
+        OBS.obs_data_set_int(CROP_FILTER_SETTINGS, "cy", math.floor(crop.h))
+        OBS.obs_source_update(CROP_FILTER.zoom, CROP_FILTER_SETTINGS)
     end
 end
 
@@ -1069,27 +1143,59 @@ function on_transition_start(t)
     -- We need to remove the crop from the sceneitem as the transition starts to avoid
     -- a delay with the rendering where you see the old crop and jump to the new one
     release_sceneitem()
+    ---
+    -- Ensure to restart filters on scene change back
+    ---
+    if SETTINGS.dc_source_name ~= "obs-zoom-to-mouse-none" and SETTINGS.auto_start and not AUTO_START_RUNNING then
+        log("Auto starting")
+        AUTO_START_RUNNING = true
+        local timer_interval = math.floor(OBS.obs_get_frame_interval_ns() / 100000)
+        OBS.timer_add(wait_for_auto_start, timer_interval)
+    end
+end
+
+function on_transform_update()
+    if SETTINGS.keep_shape then
+        if ZOOM_STATE == ZoomState.ZoomedIn then
+            -- Perform zoom again
+            ZOOM_STATE = ZoomState.ZoomingIn
+            ZOOM_INFO.zoom_to = SETTINGS.zoom_value
+            ZOOM_TIME = 0
+            ZOOM_TARGET = get_target_position(ZOOM_INFO)
+        end
+    end
+end
+
+function toggle_sceneitem_change_listener(value)
+    local scene = OBS.obs_sceneitem_get_scene(SCENEITEM)
+    local scene_source = OBS.obs_scene_get_source(scene)
+    local handler = OBS.obs_source_get_signal_handler(scene_source)
+    if value then
+        OBS.signal_handler_connect(handler, "item_transform", on_transform_update)
+    else
+        OBS.signal_handler_disconnect(handler, on_transform_update)
+    end
 end
 
 function on_frontend_event(event)
-    if event == obs.OBS_FRONTEND_EVENT_SCENE_CHANGED then
+    if event == OBS.OBS_FRONTEND_EVENT_SCENE_CHANGED then
         log("OBS Scene changed")
         -- If the scene changes we attempt to find a new source with the same name in this new scene
         -- TODO: There probably needs to be a way for users to specify what source they want to use in each scene
         -- Scene change can happen before OBS has completely loaded, so we check for that here
-        if is_obs_loaded then
+        if IS_OBS_LOADED then
             refresh_sceneitem(true)
         end
-    elseif event == obs.OBS_FRONTEND_EVENT_FINISHED_LOADING then
+    elseif event == OBS.OBS_FRONTEND_EVENT_FINISHED_LOADING then
         log("OBS Loaded")
         -- Once loaded we perform our initial lookup
-        is_obs_loaded = true
-        monitor_info = get_monitor_info(source)
+        IS_OBS_LOADED = true
+        MONITOR_INFO = get_monitor_info(DC_SOURCE)
         refresh_sceneitem(true)
-    elseif event == obs.OBS_FRONTEND_EVENT_SCRIPTING_SHUTDOWN then
+    elseif event == OBS.OBS_FRONTEND_EVENT_SCRIPTING_SHUTDOWN then
         log("OBS Shutting down")
         -- Add a fail-safe for unloading the script during shutdown
-        if is_script_loaded then
+        if IS_SCRIPT_LOADED then
             script_unload()
         end
     end
@@ -1097,41 +1203,43 @@ end
 
 function on_update_transform()
     -- Update the crop/size settings based on whatever the source in the current scene looks like
-    if is_obs_loaded then
+    if IS_OBS_LOADED then
         refresh_sceneitem(true)
     end
 
     return true
 end
 
-function on_settings_modified(props, prop, settings)
-    local name = obs.obs_property_name(prop)
+function on_settings_modified(props, prop, obs_settings_obj)
+    local name = OBS.obs_property_name(prop)
 
     -- Show/Hide the settings based on if the checkbox is checked or not
-    if name == "use_monitor_override" then
-        local visible = obs.obs_data_get_bool(settings, "use_monitor_override")
-        obs.obs_property_set_visible(obs.obs_properties_get(props, "monitor_override_label"), not visible)
-        obs.obs_property_set_visible(obs.obs_properties_get(props, "monitor_override_x"), visible)
-        obs.obs_property_set_visible(obs.obs_properties_get(props, "monitor_override_y"), visible)
-        obs.obs_property_set_visible(obs.obs_properties_get(props, "monitor_override_w"), visible)
-        obs.obs_property_set_visible(obs.obs_properties_get(props, "monitor_override_h"), visible)
-        obs.obs_property_set_visible(obs.obs_properties_get(props, "monitor_override_sx"), visible)
-        obs.obs_property_set_visible(obs.obs_properties_get(props, "monitor_override_sy"), visible)
-        obs.obs_property_set_visible(obs.obs_properties_get(props, "monitor_override_dw"), visible)
-        obs.obs_property_set_visible(obs.obs_properties_get(props, "monitor_override_dh"), visible)
+    if name == "USE_MONITOR_OVERRIDE" then
+        local visible = OBS.obs_data_get_bool(obs_settings_obj, "USE_MONITOR_OVERRIDE")
+        OBS.obs_property_set_visible(OBS.obs_properties_get(props, "monitor_override_label"), not visible)
+        OBS.obs_property_set_visible(OBS.obs_properties_get(props, "monitor_override_x"), visible)
+        OBS.obs_property_set_visible(OBS.obs_properties_get(props, "monitor_override_y"), visible)
+        OBS.obs_property_set_visible(OBS.obs_properties_get(props, "monitor_override_w"), visible)
+        OBS.obs_property_set_visible(OBS.obs_properties_get(props, "monitor_override_h"), visible)
+        OBS.obs_property_set_visible(OBS.obs_properties_get(props, "monitor_override_sx"), visible)
+        OBS.obs_property_set_visible(OBS.obs_properties_get(props, "monitor_override_sy"), visible)
+        OBS.obs_property_set_visible(OBS.obs_properties_get(props, "monitor_override_dw"), visible)
+        OBS.obs_property_set_visible(OBS.obs_properties_get(props, "monitor_override_dh"), visible)
         return true
     elseif name == "use_socket" then
-        local visible = obs.obs_data_get_bool(settings, "use_socket")
-        obs.obs_property_set_visible(obs.obs_properties_get(props, "socket_label"), not visible)
-        obs.obs_property_set_visible(obs.obs_properties_get(props, "socket_port"), visible)
-        obs.obs_property_set_visible(obs.obs_properties_get(props, "socket_poll"), visible)
+        local visible = OBS.obs_data_get_bool(obs_settings_obj, "use_socket")
+        OBS.obs_property_set_visible(OBS.obs_properties_get(props, "socket_label"), not visible)
+        OBS.obs_property_set_visible(OBS.obs_properties_get(props, "socket_port"), visible)
+        OBS.obs_property_set_visible(OBS.obs_properties_get(props, "socket_poll"), visible)
         return true
     elseif name == "allow_all_sources" then
-        local sources_list = obs.obs_properties_get(props, "source")
+        local sources_list = OBS.obs_properties_get(props, "source")
         populate_zoom_sources(sources_list)
         return true
+    elseif name == "keep_shape" then
+        on_transform_update()
     elseif name == "debug_logs" then
-        if obs.obs_data_get_bool(settings, "debug_logs") then
+        if OBS.obs_data_get_bool(obs_settings_obj, "debug_logs") then
             log_current_settings()
         end
     end
@@ -1142,35 +1250,10 @@ end
 ---
 -- Write the current settings into the log for debugging and user issue reports
 function log_current_settings()
-    local settings = {
-        zoom_value = zoom_value,
-        zoom_speed = zoom_speed,
-        use_auto_follow_mouse = use_auto_follow_mouse,
-        use_follow_outside_bounds = use_follow_outside_bounds,
-        follow_speed = follow_speed,
-        follow_border = follow_border,
-        follow_safezone_sensitivity = follow_safezone_sensitivity,
-        use_follow_auto_lock = use_follow_auto_lock,
-        use_monitor_override = use_monitor_override,
-        monitor_override_x = monitor_override_x,
-        monitor_override_y = monitor_override_y,
-        monitor_override_w = monitor_override_w,
-        monitor_override_h = monitor_override_h,
-        monitor_override_sx = monitor_override_sx,
-        monitor_override_sy = monitor_override_sy,
-        monitor_override_dw = monitor_override_dw,
-        monitor_override_dh = monitor_override_dh,
-        use_socket = use_socket,
-        socket_port = socket_port,
-        socket_poll = socket_poll,
-        debug_logs = debug_logs,
-        version = VERSION
-    }
-
-    log("OBS Version: " .. string.format("%.1f", major) .. "." .. minor)
-    log("Platform: " .. ffi.os)
+    log("OBS Version: " .. string.format("%.1f", VERSION_MAJOR) .. "." .. VERSION_MINOR)
+    log("Platform: " .. FFI.os)
     log("Current settings:")
-    log(format_table(settings))
+    log(format_table(SETTINGS))
 end
 
 function on_print_help()
@@ -1182,14 +1265,16 @@ function on_print_help()
         "Zoom Source: The display capture in the current scene to use for zooming\n" ..
         "Zoom Factor: How much to zoom in by\n" ..
         "Zoom Speed: The speed of the zoom in/out animation\n" ..
-        "Auto follow mouse: True to track the cursor while you are zoomed in\n" ..
-        "Follow outside bounds: True to track the cursor even when it is outside the bounds of the source\n" ..
+        "Zoomed at OBS Startup: Start OBS with source zoomed\n" ..
+        "Dynamic Aspect Ratio: Adjusst zoom aspect ratio to canvas source size\n" ..
+        "Auto Follow Mouse: True to track the cursor while you are zoomed in\n" ..
+        "Follow Outside Bounds: True to track the cursor even when it is outside the bounds of the source\n" ..
         "Follow Speed: The speed at which the zoomed area will follow the mouse when tracking\n" ..
         "Follow Border: The %distance from the edge of the source that will re-enable mouse tracking\n" ..
         "Lock Sensitivity: How close the tracking needs to get before it locks into position and stops tracking until you enter the follow border\n" ..
-        "Auto Lock on reverse direction: Automatically stop tracking if you reverse the direction of the mouse\n" ..
-        "Show all sources: True to allow selecting any source as the Zoom Source - You MUST set manual source position for non-display capture sources\n" ..
-        "Set manual source position: True to override the calculated x/y (topleft position), width/height (size), and scaleX/scaleY (canvas scale factor) for the selected source\n" ..
+        "Auto Lock on Reverse Direction: Automatically stop tracking if you reverse the direction of the mouse\n" ..
+        "Show All Sources: True to allow selecting any source as the Zoom Source - You MUST set manual source position for non-display capture sources\n" ..
+        "Set Manual Source Position: True to override the calculated x/y (topleft position), width/height (size), and scaleX/scaleY (canvas scale factor) for the selected source\n" ..
         "X: The coordinate of the left most pixel of the source\n" ..
         "Y: The coordinate of the top most pixel of the source\n" ..
         "Width: The width of the source (in pixels)\n" ..
@@ -1199,7 +1284,7 @@ function on_print_help()
         "Monitor Width: The width of the monitor that is showing the source (in pixels)\n" ..
         "Monitor Height: The height of the monitor that is showing the source (in pixels)\n"
 
-    if socket_available then
+    if SOCKET_AVAILABLE then
         help = help ..
             "Enable remote mouse listener: True to start a UDP socket server that will listen for mouse position messages from a remote client, see: https://github.com/BlankSourceCode/obs-zoom-to-mouse-remote\n" ..
             "Port: The port number to use for the socket server\n" ..
@@ -1210,7 +1295,7 @@ function on_print_help()
         "More Info: Show this text in the script log\n" ..
         "Enable debug logging: Show additional debug information in the script log\n\n"
 
-    obs.script_log(obs.OBS_LOG_INFO, help)
+    OBS.script_log(OBS.OBS_LOG_INFO, help)
 end
 
 function script_description()
@@ -1218,207 +1303,222 @@ function script_description()
 end
 
 function script_properties()
-    local props = obs.obs_properties_create()
+    local props = OBS.obs_properties_create()
 
     -- Populate the sources list with the known display-capture sources (OBS calls them 'monitor_capture' internally even though the UI says 'Display Capture')
-    local sources_list = obs.obs_properties_add_list(props, "source", "Zoom Source", obs.OBS_COMBO_TYPE_LIST,
-        obs.OBS_COMBO_FORMAT_STRING)
+    local sources_list = OBS.obs_properties_add_list(props, "source", "Zoom Source", OBS.OBS_COMBO_TYPE_LIST,
+        OBS.OBS_COMBO_FORMAT_STRING)
 
     populate_zoom_sources(sources_list)
 
-    local refresh_sources = obs.obs_properties_add_button(props, "refresh", "Refresh zoom sources",
+    local refresh_sources = OBS.obs_properties_add_button(props, "refresh", "Refresh zoom sources",
         function()
             populate_zoom_sources(sources_list)
-            monitor_info = get_monitor_info(source)
+            MONITOR_INFO = get_monitor_info(DC_SOURCE)
             return true
         end)
-    obs.obs_property_set_long_description(refresh_sources,
+    OBS.obs_property_set_long_description(refresh_sources,
         "Click to re-populate Zoom Sources dropdown with available sources")
 
     -- Add the rest of the settings UI
-    local zoom = obs.obs_properties_add_float(props, "zoom_value", "Zoom Factor", 1, 5, 0.5)
-    local zoom_speed = obs.obs_properties_add_float_slider(props, "zoom_speed", "Zoom Speed", 0.01, 1, 0.01)
-    local follow = obs.obs_properties_add_bool(props, "follow", "Auto follow mouse ")
-    obs.obs_property_set_long_description(follow,
+    local zoom = OBS.obs_properties_add_float(props, "zoom_value", "Zoom Factor", 1, 5, 0.5)
+    local zoom_speed = OBS.obs_properties_add_float_slider(props, "zoom_speed", "Zoom Speed", 0.01, 1, 0.01)
+    local rezoom = OBS.obs_properties_add_bool(props, "use_rezoom", "Adjust Zoom Factor to Transform")
+
+    local auto_start = OBS.obs_properties_add_bool(props, "auto_start", "Zoomed at OBS Startup")
+    OBS.obs_property_set_long_description(auto_start,
+        "When enabled, auto zoom is activated on OBS start up as soon as possible")
+
+    local keep_shape = OBS.obs_properties_add_bool(props, "keep_shape", "Dynamic Aspect Ratio ")
+    OBS.obs_property_set_long_description(keep_shape,
+        "When enabled, zoom will follow the aspect ratio of source in canvas")
+
+    local follow = OBS.obs_properties_add_bool(props, "follow", "Auto Follow Mouse")
+    OBS.obs_property_set_long_description(follow,
         "When enabled mouse traking will auto-start when zoomed in without waiting for tracking toggle hotkey")
 
-    local follow_outside_bounds = obs.obs_properties_add_bool(props, "follow_outside_bounds", "Follow outside bounds ")
-    obs.obs_property_set_long_description(follow_outside_bounds,
-        "When enabled the mouse will be tracked even when the cursor is outside the bounds of the zoom source")
+    local follow_outside_bounds = OBS.obs_properties_add_bool(props, "follow_outside_bounds", "Follow Outside Bounds ")
+    OBS.obs_property_set_long_description(follow_outside_bounds,
+        "When enabled, the mouse will be tracked even when the cursor is outside the bounds of the zoom source")
 
-    local follow_speed = obs.obs_properties_add_float_slider(props, "follow_speed", "Follow Speed", 0.01, 1, 0.01)
-    local follow_border = obs.obs_properties_add_int_slider(props, "follow_border", "Follow Border", 0, 50, 1)
-    local safezone_sense = obs.obs_properties_add_int_slider(props,
-        "follow_safezone_sensitivity", "Lock Sensitivity", 1, 20, 1)
-    local follow_auto_lock = obs.obs_properties_add_bool(props, "follow_auto_lock", "Auto Lock on reverse direction ")
-    obs.obs_property_set_long_description(follow_auto_lock,
+    local clamp_to_edges = OBS.obs_properties_add_bool(props, "clamp_to_edges", "Clamp to Display Edge")
+    local follow_speed = OBS.obs_properties_add_float_slider(props, "follow_speed", "Follow Speed", 0.01, 1, 0.01)
+    local follow_border = OBS.obs_properties_add_int_slider(props, "follow_border", "Follow Border", 0, 50, 1)
+    local safezone_sense = OBS.obs_properties_add_int_slider(props, "follow_safezone_sensitivity", "Lock Sensitivity", 1, 20, 1)
+    local follow_auto_lock = OBS.obs_properties_add_bool(props, "follow_auto_lock", "Auto Lock on Reverse Direction")
+
+    OBS.obs_property_set_long_description(follow_auto_lock,
         "When enabled moving the mouse to edge of the zoom source will begin tracking,\n" ..
         "but moving back towards the center will stop tracking simliar to panning the camera in a RTS game")
 
-    local allow_all = obs.obs_properties_add_bool(props, "allow_all_sources", "Allow any zoom source ")
-    obs.obs_property_set_long_description(allow_all, "Enable to allow selecting any source as the Zoom Source\n" ..
+    local allow_all = OBS.obs_properties_add_bool(props, "allow_all_sources", "Allow Any Zoom Source ")
+    OBS.obs_property_set_long_description(allow_all, "Enable to allow selecting any source as the Zoom Source\n" ..
         "You MUST set manual source position for non-display capture sources")
 
-    local override_props = obs.obs_properties_create();
-    local override_label = obs.obs_properties_add_text(override_props, "monitor_override_label", "", obs.OBS_TEXT_INFO)
-    local override_x = obs.obs_properties_add_int(override_props, "monitor_override_x", "X", -10000, 10000, 1)
-    local override_y = obs.obs_properties_add_int(override_props, "monitor_override_y", "Y", -10000, 10000, 1)
-    local override_w = obs.obs_properties_add_int(override_props, "monitor_override_w", "Width", 0, 10000, 1)
-    local override_h = obs.obs_properties_add_int(override_props, "monitor_override_h", "Height", 0, 10000, 1)
-    local override_sx = obs.obs_properties_add_float(override_props, "monitor_override_sx", "Scale X ", 0, 100, 0.01)
-    local override_sy = obs.obs_properties_add_float(override_props, "monitor_override_sy", "Scale Y ", 0, 100, 0.01)
-    local override_dw = obs.obs_properties_add_int(override_props, "monitor_override_dw", "Monitor Width ", 0, 10000, 1)
-    local override_dh = obs.obs_properties_add_int(override_props, "monitor_override_dh", "Monitor Height ", 0, 10000, 1)
-    local override = obs.obs_properties_add_group(props, "use_monitor_override", "Set manual source position ",
-        obs.OBS_GROUP_CHECKABLE, override_props)
+    local override_props = OBS.obs_properties_create()
+    local override_label = OBS.obs_properties_add_text(override_props, "monitor_override_label", "", OBS.OBS_TEXT_DEFAULT)
+    local override_x = OBS.obs_properties_add_int(override_props, "monitor_override_x", "X", -10000, 10000, 1)
+    local override_y = OBS.obs_properties_add_int(override_props, "monitor_override_y", "Y", -10000, 10000, 1)
+    local override_w = OBS.obs_properties_add_int(override_props, "monitor_override_w", "Width", 0, 10000, 1)
+    local override_h = OBS.obs_properties_add_int(override_props, "monitor_override_h", "Height", 0, 10000, 1)
+    local override_sx = OBS.obs_properties_add_float(override_props, "monitor_override_sx", "Scale X ", 0, 100, 0.01)
+    local override_sy = OBS.obs_properties_add_float(override_props, "monitor_override_sy", "Scale Y ", 0, 100, 0.01)
+    local override_dw = OBS.obs_properties_add_int(override_props, "monitor_override_dw", "Monitor Width ", 0, 10000, 1)
+    local override_dh = OBS.obs_properties_add_int(override_props, "monitor_override_dh", "Monitor Height ", 0, 10000, 1)
+    local override = OBS.obs_properties_add_group(props, "USE_MONITOR_OVERRIDE", "Set Manual Source Position",
+        OBS.OBS_GROUP_CHECKABLE, override_props)
 
-    obs.obs_property_set_long_description(override_label,
+    OBS.obs_property_set_long_description(override_label,
         "When enabled the specified size/position settings will be used for the zoom source instead of the auto-calculated ones")
-    obs.obs_property_set_long_description(override_sx, "Usually 1 - unless you are using a scaled source")
-    obs.obs_property_set_long_description(override_sy, "Usually 1 - unless you are using a scaled source")
-    obs.obs_property_set_long_description(override_dw, "X resolution of your montior")
-    obs.obs_property_set_long_description(override_dh, "Y resolution of your monitor")
+    OBS.obs_property_set_long_description(override_sx, "Usually 1 - unless you are using a scaled source")
+    OBS.obs_property_set_long_description(override_sy, "Usually 1 - unless you are using a scaled source")
+    OBS.obs_property_set_long_description(override_dw, "X resolution of your montior")
+    OBS.obs_property_set_long_description(override_dh, "Y resolution of your monitor")
 
-    if socket_available then
-        local socket_props = obs.obs_properties_create();
-        local r_label = obs.obs_properties_add_text(socket_props, "socket_label", "", obs.OBS_TEXT_INFO)
-        local r_port = obs.obs_properties_add_int(socket_props, "socket_port", "Port ", 1024, 65535, 1)
-        local r_poll = obs.obs_properties_add_int(socket_props, "socket_poll", "Poll Delay (ms) ", 0, 1000, 1)
-        local socket = obs.obs_properties_add_group(props, "use_socket", "Enable remote mouse listener ",
-            obs.OBS_GROUP_CHECKABLE, socket_props)
+    if SOCKET_AVAILABLE then
+        local socket_props = OBS.obs_properties_create()
+        local r_label = OBS.obs_properties_add_text(socket_props, "socket_label", "", OBS.OBS_TEXT_INFO)
+        local r_port = OBS.obs_properties_add_int(socket_props, "socket_port", "Port ", 1024, 65535, 1)
+        local r_poll = OBS.obs_properties_add_int(socket_props, "socket_poll", "Poll Delay (ms)", 0, 1000, 1)
+        local socket = OBS.obs_properties_add_group(props, "use_socket", "Enable Remote Mouse Listener",
+            OBS.OBS_GROUP_CHECKABLE, socket_props)
 
-        obs.obs_property_set_long_description(r_label,
+        OBS.obs_property_set_long_description(r_label,
             "When enabled a UDP socket server will listen for mouse position messages from a remote client")
-        obs.obs_property_set_long_description(r_port,
-            "You must restart the server after changing the port (Uncheck then re-check 'Enable remote mouse listener')")
-        obs.obs_property_set_long_description(r_poll,
-            "You must restart the server after changing the poll delay (Uncheck then re-check 'Enable remote mouse listener')")
+        OBS.obs_property_set_long_description(r_port,
+            "You must restart the server after changing the port (Uncheck then re-check 'Enable Remote Mouse Listener')")
+        OBS.obs_property_set_long_description(r_poll,
+            "You must restart the server after changing the poll delay (Uncheck then re-check 'Enable Remote Mouse Listener')")
 
-        obs.obs_property_set_visible(r_label, not use_socket)
-        obs.obs_property_set_visible(r_port, use_socket)
-        obs.obs_property_set_visible(r_poll, use_socket)
-        obs.obs_property_set_modified_callback(socket, on_settings_modified)
+        OBS.obs_property_set_visible(r_label, not USE_SOCKET)
+        OBS.obs_property_set_visible(r_port, USE_SOCKET)
+        OBS.obs_property_set_visible(r_poll, USE_SOCKET)
+        OBS.obs_property_set_modified_callback(socket, on_settings_modified)
     end
 
     -- Add a button for more information
-    local help = obs.obs_properties_add_button(props, "help_button", "More Info", on_print_help)
-    obs.obs_property_set_long_description(help,
+    local help = OBS.obs_properties_add_button(props, "help_button", "More Info", on_print_help)
+    OBS.obs_property_set_long_description(help,
         "Click to show help information (via the script log)")
 
-    local debug = obs.obs_properties_add_bool(props, "debug_logs", "Enable debug logging ")
-    obs.obs_property_set_long_description(debug,
-        "When enabled the script will output diagnostics messages to the script log (useful for debugging/github issues)")
+    local debug = OBS.obs_properties_add_bool(props, "debug_logs", "Enable debug logging ")
+    OBS.obs_property_set_long_description(debug,
+        "When enabled the script will output diagnostics messages to the script log (useful for debugging or GitHub issues)")
 
-    obs.obs_property_set_visible(override_label, not use_monitor_override)
-    obs.obs_property_set_visible(override_x, use_monitor_override)
-    obs.obs_property_set_visible(override_y, use_monitor_override)
-    obs.obs_property_set_visible(override_w, use_monitor_override)
-    obs.obs_property_set_visible(override_h, use_monitor_override)
-    obs.obs_property_set_visible(override_sx, use_monitor_override)
-    obs.obs_property_set_visible(override_sy, use_monitor_override)
-    obs.obs_property_set_visible(override_dw, use_monitor_override)
-    obs.obs_property_set_visible(override_dh, use_monitor_override)
-    obs.obs_property_set_modified_callback(override, on_settings_modified)
+    OBS.obs_property_set_visible(override_label, not SETTINGS.use_monitor_override)
+    OBS.obs_property_set_visible(override_x, SETTINGS.use_monitor_override)
+    OBS.obs_property_set_visible(override_y, SETTINGS.use_monitor_override)
+    OBS.obs_property_set_visible(override_w, SETTINGS.use_monitor_override)
+    OBS.obs_property_set_visible(override_h, SETTINGS.use_monitor_override)
+    OBS.obs_property_set_visible(override_sx, SETTINGS.use_monitor_override)
+    OBS.obs_property_set_visible(override_sy, SETTINGS.use_monitor_override)
+    OBS.obs_property_set_visible(override_dw, SETTINGS.use_monitor_override)
+    OBS.obs_property_set_visible(override_dh, SETTINGS.use_monitor_override)
+    OBS.obs_property_set_modified_callback(override, on_settings_modified)
 
-    obs.obs_property_set_modified_callback(allow_all, on_settings_modified)
-    obs.obs_property_set_modified_callback(debug, on_settings_modified)
+    OBS.obs_property_set_modified_callback(allow_all, on_settings_modified)
+    OBS.obs_property_set_modified_callback(debug, on_settings_modified)
 
     return props
 end
 
-function script_load(settings)
-    sceneitem_info_orig = nil
+function script_load(obs_settings_obj)
+    SCENEITEM_INFO.original = nil
 
     -- Workaround for detecting if OBS is already loaded and we were reloaded using "Reload Scripts"
-    local current_scene = obs.obs_frontend_get_current_scene()
-    is_obs_loaded = current_scene ~= nil -- Current scene is nil on first OBS load
-    obs.obs_source_release(current_scene)
+    local current_scene = OBS.obs_frontend_get_current_scene()
+    IS_OBS_LOADED = current_scene ~= nil -- Current scene is nil on first OBS load
+    OBS.obs_source_release(current_scene)
 
     -- Add our hotkey
-    hotkey_zoom_id = obs.obs_hotkey_register_frontend("toggle_zoom_hotkey", "Toggle zoom to mouse",
-        on_toggle_zoom)
-
-    hotkey_follow_id = obs.obs_hotkey_register_frontend("toggle_follow_hotkey", "Toggle follow mouse during zoom",
-        on_toggle_follow)
+    HOTKEYS = {
+        zoom = OBS.obs_hotkey_register_frontend("toggle_zoom_hotkey", "Toggle Zoom To Mouse", on_toggle_zoom),
+        follow = OBS.obs_hotkey_register_frontend("toggle_follow_hotkey", "Toggle Follow Mouse During Zoom", on_toggle_follow),
+    }
 
     -- Attempt to reload existing hotkey bindings if we can find any
-    local hotkey_save_array = obs.obs_data_get_array(settings, "obs_zoom_to_mouse.hotkey.zoom")
-    obs.obs_hotkey_load(hotkey_zoom_id, hotkey_save_array)
-    obs.obs_data_array_release(hotkey_save_array)
-
-    hotkey_save_array = obs.obs_data_get_array(settings, "obs_zoom_to_mouse.hotkey.follow")
-    obs.obs_hotkey_load(hotkey_follow_id, hotkey_save_array)
-    obs.obs_data_array_release(hotkey_save_array)
+    for k, v in pairs(HOTKEYS) do
+        if v ~= nil then
+            local hotkey_save_array = OBS.obs_data_get_array(obs_settings_obj, "obs_zoom_to_mouse.hotkey." .. k)
+            OBS.obs_hotkey_load(v, hotkey_save_array)
+            OBS.obs_data_array_release(hotkey_save_array)
+        end
+    end
 
     -- Load any other settings
-    zoom_value = obs.obs_data_get_double(settings, "zoom_value")
-    zoom_speed = obs.obs_data_get_double(settings, "zoom_speed")
-    use_auto_follow_mouse = obs.obs_data_get_bool(settings, "follow")
-    use_follow_outside_bounds = obs.obs_data_get_bool(settings, "follow_outside_bounds")
-    follow_speed = obs.obs_data_get_double(settings, "follow_speed")
-    follow_border = obs.obs_data_get_int(settings, "follow_border")
-    follow_safezone_sensitivity = obs.obs_data_get_int(settings, "follow_safezone_sensitivity")
-    use_follow_auto_lock = obs.obs_data_get_bool(settings, "follow_auto_lock")
-    allow_all_sources = obs.obs_data_get_bool(settings, "allow_all_sources")
-    use_monitor_override = obs.obs_data_get_bool(settings, "use_monitor_override")
-    monitor_override_x = obs.obs_data_get_int(settings, "monitor_override_x")
-    monitor_override_y = obs.obs_data_get_int(settings, "monitor_override_y")
-    monitor_override_w = obs.obs_data_get_int(settings, "monitor_override_w")
-    monitor_override_h = obs.obs_data_get_int(settings, "monitor_override_h")
-    monitor_override_sx = obs.obs_data_get_double(settings, "monitor_override_sx")
-    monitor_override_sy = obs.obs_data_get_double(settings, "monitor_override_sy")
-    monitor_override_dw = obs.obs_data_get_int(settings, "monitor_override_dw")
-    monitor_override_dh = obs.obs_data_get_int(settings, "monitor_override_dh")
-    use_socket = obs.obs_data_get_bool(settings, "use_socket")
-    socket_port = obs.obs_data_get_int(settings, "socket_port")
-    socket_poll = obs.obs_data_get_int(settings, "socket_poll")
-    debug_logs = obs.obs_data_get_bool(settings, "debug_logs")
+    settings_update(obs_settings_obj)
 
-    obs.obs_frontend_add_event_callback(on_frontend_event)
+    OBS.obs_frontend_add_event_callback(on_frontend_event)
 
-    if debug_logs then
+    if SETTINGS.debug_logs then
         log_current_settings()
     end
 
     -- Add the transition_start event handlers to each transition (the global source_transition_start event never fires)
-    local transitions = obs.obs_frontend_get_transitions()
+    local transitions = OBS.obs_frontend_get_transitions()
     if transitions ~= nil then
         for i, s in pairs(transitions) do
-            local name = obs.obs_source_get_name(s)
+            local name = OBS.obs_source_get_name(s)
             log("Adding transition_start listener to " .. name)
-            local handler = obs.obs_source_get_signal_handler(s)
-            obs.signal_handler_connect(handler, "transition_start", on_transition_start)
+            local handler = OBS.obs_source_get_signal_handler(s)
+            OBS.signal_handler_connect(handler, "transition_start", on_transition_start)
         end
-        obs.source_list_release(transitions)
+        OBS.source_list_release(transitions)
     end
 
-    if ffi.os == "Linux" and not x11_display then
+    if FFI.os == "Linux" and not x11_display then
         log("ERROR: Could not get X11 Display for Linux\n" ..
             "Mouse position will be incorrect.")
     end
 
-    source_name = ""
-    use_socket = false
-    is_script_loaded = true
+    SETTINGS.dc_source_name = ""
+    USE_SOCKET = false
+    IS_SCRIPT_LOADED = true
+    if SETTINGS.dc_source_name ~= "obs-zoom-to-mouse-none" and SETTINGS.auto_start and not AUTO_START_RUNNING then
+        log("Auto starting")
+        AUTO_START_RUNNING = true
+        local timer_interval = math.floor(OBS.obs_get_frame_interval_ns() / 100000)
+        OBS.timer_add(wait_for_auto_start, timer_interval)
+    end
+end
+
+function wait_for_auto_start()
+    if SETTINGS.dc_source_name == "obs-zoom-to-mouse-none" or not SETTINGS.auto_start then
+        OBS.remove_current_callback()
+        AUTO_START_RUNNING = false
+        log("Auto start cancelled")
+    else
+        AUTO_START_RUNNING = true
+        local found_source = OBS.obs_get_source_by_name(SETTINGS.dc_source_name)
+        if found_source ~= nil then
+            -- zoom_state = ZoomState.ZoomingIn
+            DC_SOURCE = found_source
+            on_toggle_zoom(true, true)
+            OBS.remove_current_callback()
+            AUTO_START_RUNNING = false
+            log("Auto start done")
+        end
+    end
 end
 
 function script_unload()
-    is_script_loaded = false
+    IS_SCRIPT_LOADED = false
 
     -- Clean up the memory usage
-    if major > 29.1 or (major == 29.1 and minor > 2) then -- 29.1.2 and below seems to crash if you do this, so we ignore it as the script is closing anyway
-        local transitions = obs.obs_frontend_get_transitions()
+    -- 29.1.2 and below seems to crash if you do this, so we ignore it as the script is closing anyway
+    if VERSION_MAJOR > 29.1 or (VERSION_MAJOR == 29.1 and VERSION_MINOR > 2) then
+        local transitions = OBS.obs_frontend_get_transitions()
         if transitions ~= nil then
             for i, s in pairs(transitions) do
-                local handler = obs.obs_source_get_signal_handler(s)
-                obs.signal_handler_disconnect(handler, "transition_start", on_transition_start)
+                local handler = OBS.obs_source_get_signal_handler(s)
+                OBS.signal_handler_disconnect(handler, "transition_start", on_transition_start)
             end
-            obs.source_list_release(transitions)
+            OBS.source_list_release(transitions)
         end
 
-        obs.obs_hotkey_unregister(on_toggle_zoom)
-        obs.obs_hotkey_unregister(on_toggle_follow)
-        obs.obs_frontend_remove_event_callback(on_frontend_event)
+        OBS.obs_hotkey_unregister(on_toggle_zoom)
+        OBS.obs_hotkey_unregister(on_toggle_follow)
+        OBS.obs_frontend_remove_event_callback(on_frontend_event)
         release_sceneitem()
     end
 
@@ -1428,140 +1528,140 @@ function script_unload()
         x11_lib = nil
     end
 
-    if socket_server ~= nil then
+    if SOCKET_SERVER ~= nil then
         stop_server()
     end
 end
 
 function script_defaults(settings)
     -- Default values for the script
-    obs.obs_data_set_default_double(settings, "zoom_value", 2)
-    obs.obs_data_set_default_double(settings, "zoom_speed", 0.06)
-    obs.obs_data_set_default_bool(settings, "follow", true)
-    obs.obs_data_set_default_bool(settings, "follow_outside_bounds", false)
-    obs.obs_data_set_default_double(settings, "follow_speed", 0.25)
-    obs.obs_data_set_default_int(settings, "follow_border", 8)
-    obs.obs_data_set_default_int(settings, "follow_safezone_sensitivity", 4)
-    obs.obs_data_set_default_bool(settings, "follow_auto_lock", false)
-    obs.obs_data_set_default_bool(settings, "allow_all_sources", false)
-    obs.obs_data_set_default_bool(settings, "use_monitor_override", false)
-    obs.obs_data_set_default_int(settings, "monitor_override_x", 0)
-    obs.obs_data_set_default_int(settings, "monitor_override_y", 0)
-    obs.obs_data_set_default_int(settings, "monitor_override_w", 1920)
-    obs.obs_data_set_default_int(settings, "monitor_override_h", 1080)
-    obs.obs_data_set_default_double(settings, "monitor_override_sx", 1)
-    obs.obs_data_set_default_double(settings, "monitor_override_sy", 1)
-    obs.obs_data_set_default_int(settings, "monitor_override_dw", 1920)
-    obs.obs_data_set_default_int(settings, "monitor_override_dh", 1080)
-    obs.obs_data_set_default_bool(settings, "use_socket", false)
-    obs.obs_data_set_default_int(settings, "socket_port", 12345)
-    obs.obs_data_set_default_int(settings, "socket_poll", 10)
-    obs.obs_data_set_default_bool(settings, "debug_logs", false)
+    OBS.obs_data_set_default_double(settings, "zoom_value", 2)
+    OBS.obs_data_set_default_double(settings, "zoom_speed", 0.06)
+    OBS.obs_data_set_default_bool(settings, "rezoom", false)
+    OBS.obs_data_set_default_bool(settings, "follow", true)
+    OBS.obs_data_set_default_bool(settings, "follow_outside_bounds", false)
+    OBS.obs_data_set_default_double(settings, "follow_speed", 0.25)
+    OBS.obs_data_set_default_int(settings, "follow_border", 8)
+    OBS.obs_data_set_default_int(settings, "follow_safezone_sensitivity", 4)
+    OBS.obs_data_set_default_bool(settings, "follow_auto_lock", false)
+    OBS.obs_data_set_default_bool(settings, "allow_all_sources", false)
+    OBS.obs_data_set_default_bool(settings, "USE_MONITOR_OVERRIDE", false)
+    OBS.obs_data_set_default_int(settings, "monitor_override_x", 0)
+    OBS.obs_data_set_default_int(settings, "monitor_override_y", 0)
+    OBS.obs_data_set_default_int(settings, "monitor_override_w", 1920)
+    OBS.obs_data_set_default_int(settings, "monitor_override_h", 1080)
+    OBS.obs_data_set_default_double(settings, "monitor_override_sx", 1)
+    OBS.obs_data_set_default_double(settings, "monitor_override_sy", 1)
+    OBS.obs_data_set_default_int(settings, "monitor_override_dw", 1920)
+    OBS.obs_data_set_default_int(settings, "monitor_override_dh", 1080)
+    OBS.obs_data_set_default_bool(settings, "use_socket", false)
+    OBS.obs_data_set_default_int(settings, "socket_port", 12345)
+    OBS.obs_data_set_default_int(settings, "socket_poll", 10)
+    OBS.obs_data_set_default_bool(settings, "debug_logs", false)
 end
 
 function script_save(settings)
     -- Save the custom hotkey information
-    if hotkey_zoom_id ~= nil then
-        local hotkey_save_array = obs.obs_hotkey_save(hotkey_zoom_id)
-        obs.obs_data_set_array(settings, "obs_zoom_to_mouse.hotkey.zoom", hotkey_save_array)
-        obs.obs_data_array_release(hotkey_save_array)
-    end
-
-    if hotkey_follow_id ~= nil then
-        local hotkey_save_array = obs.obs_hotkey_save(hotkey_follow_id)
-        obs.obs_data_set_array(settings, "obs_zoom_to_mouse.hotkey.follow", hotkey_save_array)
-        obs.obs_data_array_release(hotkey_save_array)
+    for k, v in pairs(HOTKEYS) do
+        if v ~= nil then
+            local hotkey_save_array = OBS.obs_hotkey_save(v)
+            OBS.obs_data_set_array(settings, "obs_zoom_to_mouse.hotkey." .. k, hotkey_save_array)
+            OBS.obs_data_array_release(hotkey_save_array)
+        end
     end
 end
 
-function script_update(settings)
-    local old_source_name = source_name
-    local old_override = use_monitor_override
-    local old_x = monitor_override_x
-    local old_y = monitor_override_y
-    local old_w = monitor_override_w
-    local old_h = monitor_override_h
-    local old_sx = monitor_override_sx
-    local old_sy = monitor_override_sy
-    local old_dw = monitor_override_dw
-    local old_dh = monitor_override_dh
-    local old_socket = use_socket
-    local old_port = socket_port
-    local old_poll = socket_poll
+function settings_update(obs_settings_obj)
+    local old_settings
+    old_settings, SETTINGS = SETTINGS, {
+        dc_source_name = OBS.obs_data_get_string(obs_settings_obj, "source"),
+        zoom_value = OBS.obs_data_get_double(obs_settings_obj, "zoom_value"),
+        zoom_speed = OBS.obs_data_get_double(obs_settings_obj, "zoom_speed"),
+        use_auto_follow_mouse = OBS.obs_data_get_bool(obs_settings_obj, "follow"),
+        follow_outside_bounds = OBS.obs_data_get_bool(obs_settings_obj, "follow_outside_bounds"),
+        clamp_to_edges = OBS.obs_data_get_bool(obs_settings_obj, "clamp_to_edges"),
+        follow_speed = OBS.obs_data_get_double(obs_settings_obj, "follow_speed"),
+        follow_border = OBS.obs_data_get_int(obs_settings_obj, "follow_border"),
+        follow_safezone_sensitivity = OBS.obs_data_get_int(obs_settings_obj, "follow_safezone_sensitivity"),
+        use_follow_auto_lock = OBS.obs_data_get_bool(obs_settings_obj, "follow_auto_lock"),
+        allow_all_sources = OBS.obs_data_get_bool(obs_settings_obj, "allow_all_sources"),
+        use_monitor_override = OBS.obs_data_get_bool(obs_settings_obj, "USE_MONITOR_OVERRIDE"),
+        monitor_override_x = OBS.obs_data_get_int(obs_settings_obj, "monitor_override_x"),
+        monitor_override_y = OBS.obs_data_get_int(obs_settings_obj, "monitor_override_y"),
+        monitor_override_w = OBS.obs_data_get_int(obs_settings_obj, "monitor_override_w"),
+        monitor_override_h = OBS.obs_data_get_int(obs_settings_obj, "monitor_override_h"),
+        monitor_override_sx = OBS.obs_data_get_double(obs_settings_obj, "monitor_override_sx"),
+        monitor_override_sy = OBS.obs_data_get_double(obs_settings_obj, "monitor_override_sy"),
+        monitor_override_dw = OBS.obs_data_get_int(obs_settings_obj, "monitor_override_dw"),
+        monitor_override_dh = OBS.obs_data_get_int(obs_settings_obj, "monitor_override_dh"),
+        use_socket = OBS.obs_data_get_bool(obs_settings_obj, "use_socket"),
+        socket_port = OBS.obs_data_get_int(obs_settings_obj, "socket_port"),
+        socket_poll = OBS.obs_data_get_int(obs_settings_obj, "socket_poll"),
+        debug_logs = OBS.obs_data_get_bool(obs_settings_obj, "debug_logs"),
+    }
 
+    local changed_keys = {}
+    for k, v in pairs(SETTINGS) do
+        if v ~= old_settings[k] then
+            changed_keys[k] = true
+        end
+    end
+    return changed_keys
+end
+
+function script_update(obs_settings_obj)
     -- Update the settings
-    source_name = obs.obs_data_get_string(settings, "source")
-    zoom_value = obs.obs_data_get_double(settings, "zoom_value")
-    zoom_speed = obs.obs_data_get_double(settings, "zoom_speed")
-    use_auto_follow_mouse = obs.obs_data_get_bool(settings, "follow")
-    use_follow_outside_bounds = obs.obs_data_get_bool(settings, "follow_outside_bounds")
-    follow_speed = obs.obs_data_get_double(settings, "follow_speed")
-    follow_border = obs.obs_data_get_int(settings, "follow_border")
-    follow_safezone_sensitivity = obs.obs_data_get_int(settings, "follow_safezone_sensitivity")
-    use_follow_auto_lock = obs.obs_data_get_bool(settings, "follow_auto_lock")
-    allow_all_sources = obs.obs_data_get_bool(settings, "allow_all_sources")
-    use_monitor_override = obs.obs_data_get_bool(settings, "use_monitor_override")
-    monitor_override_x = obs.obs_data_get_int(settings, "monitor_override_x")
-    monitor_override_y = obs.obs_data_get_int(settings, "monitor_override_y")
-    monitor_override_w = obs.obs_data_get_int(settings, "monitor_override_w")
-    monitor_override_h = obs.obs_data_get_int(settings, "monitor_override_h")
-    monitor_override_sx = obs.obs_data_get_double(settings, "monitor_override_sx")
-    monitor_override_sy = obs.obs_data_get_double(settings, "monitor_override_sy")
-    monitor_override_dw = obs.obs_data_get_int(settings, "monitor_override_dw")
-    monitor_override_dh = obs.obs_data_get_int(settings, "monitor_override_dh")
-    use_socket = obs.obs_data_get_bool(settings, "use_socket")
-    socket_port = obs.obs_data_get_int(settings, "socket_port")
-    socket_poll = obs.obs_data_get_int(settings, "socket_poll")
-    debug_logs = obs.obs_data_get_bool(settings, "debug_logs")
+    local changed_keys = settings_update(obs_settings_obj)
 
     -- Only do the expensive refresh if the user selected a new source
-    if source_name ~= old_source_name and is_obs_loaded then
+    if IS_OBS_LOADED and changed_keys.dc_source_name then
         refresh_sceneitem(true)
     end
 
     -- Update the monitor_info if the settings changed
-    if source_name ~= old_source_name or
-        use_monitor_override ~= old_override or
-        monitor_override_x ~= old_x or
-        monitor_override_y ~= old_y or
-        monitor_override_w ~= old_w or
-        monitor_override_h ~= old_h or
-        monitor_override_sx ~= old_sx or
-        monitor_override_sy ~= old_sy or
-        monitor_override_w ~= old_dw or
-        monitor_override_h ~= old_dh then
-        if is_obs_loaded then
-            monitor_info = get_monitor_info(source)
+    if
+        changed_keys.dc_source_name or
+        changed_keys.use_monitor_override or
+        changed_keys.monitor_override_x or
+        changed_keys.monitor_override_y or
+        changed_keys.monitor_override_w or
+        changed_keys.monitor_override_h or
+        changed_keys.monitor_override_sx or
+        changed_keys.monitor_override_sy or
+        changed_keys.monitor_override_w or
+        changed_keys.monitor_override_h then
+        if IS_OBS_LOADED then
+            MONITOR_INFO = get_monitor_info(DC_SOURCE)
         end
     end
 
-    if old_socket ~= use_socket then
-        if use_socket then
+    if changed_keys.use_socket then
+        if USE_SOCKET then
             start_server()
         else
             stop_server()
         end
-    elseif use_socket and (old_poll ~= socket_poll or old_port ~= socket_port) then
+    elseif SETTINGS.use_socket and (changed_keys.socket_port or changed_keys.socket_port) then
         stop_server()
         start_server()
     end
 end
 
 function populate_zoom_sources(list)
-    obs.obs_property_list_clear(list)
+    OBS.obs_property_list_clear(list)
 
-    local sources = obs.obs_enum_sources()
+    local sources = OBS.obs_enum_sources()
     if sources ~= nil then
         local dc_info = get_dc_info()
-        obs.obs_property_list_add_string(list, "<None>", "obs-zoom-to-mouse-none")
+        OBS.obs_property_list_add_string(list, "<None>", "obs-zoom-to-mouse-none")
         for _, source in ipairs(sources) do
-            local source_type = obs.obs_source_get_id(source)
-            if source_type == dc_info.source_id or allow_all_sources then
-                local name = obs.obs_source_get_name(source)
-                obs.obs_property_list_add_string(list, name, name)
+            local source_type = OBS.obs_source_get_id(source)
+            if source_type == dc_info.source_id or SETTINGS.allow_all_sources then
+                local name = OBS.obs_source_get_name(source)
+                OBS.obs_property_list_add_string(list, name, name)
             end
         end
 
-        obs.source_list_release(sources)
+        OBS.source_list_release(sources)
     end
 end
