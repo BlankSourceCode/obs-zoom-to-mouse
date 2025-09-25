@@ -448,7 +448,7 @@ function release_sceneitem()
 
         if sceneitem_info_orig ~= nil then
             log("Transform info reset back to original")
-            obs.obs_sceneitem_get_info(sceneitem, sceneitem_info_orig)
+            obs.obs_sceneitem_set_info2(sceneitem, sceneitem_info_orig)
             sceneitem_info_orig = nil
         end
 
@@ -574,13 +574,13 @@ function refresh_sceneitem(find_newest)
     if sceneitem ~= nil then
         -- Capture the original settings so we can restore them later
         sceneitem_info_orig = obs.obs_transform_info()
-        obs.obs_sceneitem_get_info(sceneitem, sceneitem_info_orig)
+        obs.obs_sceneitem_get_info2(sceneitem, sceneitem_info_orig)
 
         sceneitem_crop_orig = obs.obs_sceneitem_crop()
         obs.obs_sceneitem_get_crop(sceneitem, sceneitem_crop_orig)
 
         sceneitem_info = obs.obs_transform_info()
-        obs.obs_sceneitem_get_info(sceneitem, sceneitem_info)
+        obs.obs_sceneitem_get_info2(sceneitem, sceneitem_info)
 
         sceneitem_crop = obs.obs_sceneitem_crop()
         obs.obs_sceneitem_get_crop(sceneitem, sceneitem_crop)
@@ -631,7 +631,7 @@ function refresh_sceneitem(find_newest)
             sceneitem_info.bounds.x = source_width * sceneitem_info.scale.x
             sceneitem_info.bounds.y = source_height * sceneitem_info.scale.y
 
-            obs.obs_sceneitem_set_info(sceneitem, sceneitem_info)
+            obs.obs_sceneitem_set_info2(sceneitem, sceneitem_info)
 
             log("WARNING: Found existing non-boundingbox transform. This may cause issues with zooming.\n" ..
                 "         Settings have been auto converted to a bounding box scaling transfrom instead.\n" ..
