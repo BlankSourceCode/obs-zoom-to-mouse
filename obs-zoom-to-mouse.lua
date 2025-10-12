@@ -6,12 +6,8 @@
 
 local obs = obslua
 local ffi = require("ffi")
-local VERSION = "1.0.2"
+local VERSION = "1.0"
 local CROP_FILTER_NAME = "obs-zoom-to-mouse-crop"
-
-local socket_available, socket = pcall(require, "ljsocket")
-local socket_server = nil
-local socket_mouse = nil
 
 local source_name = ""
 local source = nil
@@ -67,12 +63,7 @@ local monitor_override_sx = 0
 local monitor_override_sy = 0
 local monitor_override_dw = 0
 local monitor_override_dh = 0
-local use_socket = false
-local socket_port = 0
-local socket_poll = 1000
 local debug_logs = false
-local is_obs_loaded = false
-local is_script_loaded = false
 
 local ZoomState = {
     None = 0,
@@ -83,9 +74,7 @@ local ZoomState = {
 local zoom_state = ZoomState.None
 
 local version = obs.obs_get_version_string()
-local m1, m2 = version:match("(%d+%.%d+)%.(%d+)")
-local major = tonumber(m1) or 0
-local minor = tonumber(m2) or 0
+local major = tonumber(version:match("(%d+%.%d+)")) or 0
 
 -- Define the mouse cursor functions for each platform
 if ffi.os == "Windows" then
@@ -160,32 +149,27 @@ end
 function get_mouse_pos()
     local mouse = { x = 0, y = 0 }
 
-    if socket_mouse ~= nil then
-        mouse.x = socket_mouse.x
-        mouse.y = socket_mouse.y
-    else
-        if ffi.os == "Windows" then
-            if win_point and ffi.C.GetCursorPos(win_point) ~= 0 then
-                mouse.x = win_point[0].x
-                mouse.y = win_point[0].y
+    if ffi.os == "Windows" then
+        if win_point and ffi.C.GetCursorPos(win_point) ~= 0 then
+            mouse.x = win_point[0].x
+            mouse.y = win_point[0].y
+        end
+    elseif ffi.os == "Linux" then
+        if x11_lib ~= nil and x11_display ~= nil and x11_root ~= nil and x11_mouse ~= nil then
+            if x11_lib.XQueryPointer(x11_display, x11_root, x11_mouse.root_win, x11_mouse.child_win, x11_mouse.root_x, x11_mouse.root_y, x11_mouse.win_x, x11_mouse.win_y, x11_mouse.mask) ~= 0 then
+                mouse.x = tonumber(x11_mouse.win_x[0])
+                mouse.y = tonumber(x11_mouse.win_y[0])
             end
-        elseif ffi.os == "Linux" then
-            if x11_lib ~= nil and x11_display ~= nil and x11_root ~= nil and x11_mouse ~= nil then
-                if x11_lib.XQueryPointer(x11_display, x11_root, x11_mouse.root_win, x11_mouse.child_win, x11_mouse.root_x, x11_mouse.root_y, x11_mouse.win_x, x11_mouse.win_y, x11_mouse.mask) ~= 0 then
-                    mouse.x = tonumber(x11_mouse.win_x[0])
-                    mouse.y = tonumber(x11_mouse.win_y[0])
-                end
-            end
-        elseif ffi.os == "OSX" then
-            if osx_lib ~= nil and osx_nsevent ~= nil and osx_mouse_location ~= nil then
-                local point = osx_mouse_location(osx_nsevent.class, osx_nsevent.sel)
-                mouse.x = point.x
-                if monitor_info ~= nil then
-                    if monitor_info.display_height > 0 then
-                        mouse.y = monitor_info.display_height - point.y
-                    else
-                        mouse.y = monitor_info.height - point.y
-                    end
+        end
+    elseif ffi.os == "OSX" then
+        if osx_lib ~= nil and osx_nsevent ~= nil and osx_mouse_location ~= nil then
+            local point = osx_mouse_location(osx_nsevent.class, osx_nsevent.sel)
+            mouse.x = point.x
+            if monitor_info ~= nil then
+                if monitor_info.display_height > 0 then
+                    mouse.y = monitor_info.display_height - point.y
+                else
+                    mouse.y = monitor_info.height - point.y
                 end
             end
         end
@@ -448,7 +432,7 @@ function release_sceneitem()
 
         if sceneitem_info_orig ~= nil then
             log("Transform info reset back to original")
-            obs.obs_sceneitem_get_info(sceneitem, sceneitem_info_orig)
+            obs.obs_sceneitem_set_info2(sceneitem, sceneitem_info_orig)
             sceneitem_info_orig = nil
         end
 
@@ -520,14 +504,9 @@ function refresh_sceneitem(find_newest)
                             if all_items then
                                 for _, item in pairs(all_items) do
                                     local nested = obs.obs_sceneitem_get_source(item)
-                                    if nested ~= nil then
-                                        if obs.obs_source_is_scene(nested) then
-                                            local nested_scene = obs.obs_scene_from_source(nested)
-                                            table.insert(queue, nested_scene)
-                                        elseif obs.obs_source_is_group(nested) then
-                                            local nested_scene = obs.obs_group_from_source(nested)
-                                            table.insert(queue, nested_scene)
-                                        end
+                                    if nested ~= nil and obs.obs_source_is_scene(nested) then
+                                        local nested_scene = obs.obs_scene_from_source(nested)
+                                        table.insert(queue, nested_scene)
                                     end
                                 end
                                 obs.sceneitem_list_release(all_items)
@@ -574,13 +553,13 @@ function refresh_sceneitem(find_newest)
     if sceneitem ~= nil then
         -- Capture the original settings so we can restore them later
         sceneitem_info_orig = obs.obs_transform_info()
-        obs.obs_sceneitem_get_info(sceneitem, sceneitem_info_orig)
+        obs.obs_sceneitem_get_info2(sceneitem, sceneitem_info_orig)
 
         sceneitem_crop_orig = obs.obs_sceneitem_crop()
         obs.obs_sceneitem_get_crop(sceneitem, sceneitem_crop_orig)
 
         sceneitem_info = obs.obs_transform_info()
-        obs.obs_sceneitem_get_info(sceneitem, sceneitem_info)
+        obs.obs_sceneitem_get_info2(sceneitem, sceneitem_info)
 
         sceneitem_crop = obs.obs_sceneitem_crop()
         obs.obs_sceneitem_get_crop(sceneitem, sceneitem_crop)
@@ -610,14 +589,12 @@ function refresh_sceneitem(find_newest)
         end
 
         if source_width == 0 or source_height == 0 then
-            if monitor_info ~= nil and monitor_info.width > 0 and monitor_info.height > 0 then
-                log("WARNING: Something went wrong determining source size.\n" ..
-                    "         Using source size from info: " .. monitor_info.width .. ", " .. monitor_info.height)
+            log("ERROR: Something went wrong determining source size." ..
+                "       Try using the 'Set manual source position' option and adding override values")
+
+            if monitor_info ~= nil then
                 source_width = monitor_info.width
                 source_height = monitor_info.height
-            else
-                log("ERROR: Something went wrong determining source size.\n" ..
-                "       Try using the 'Set manual source position' option and adding override values")
             end
         else
             log("Using source size: " .. source_width .. ", " .. source_height)
@@ -631,7 +608,7 @@ function refresh_sceneitem(find_newest)
             sceneitem_info.bounds.x = source_width * sceneitem_info.scale.x
             sceneitem_info.bounds.y = source_height * sceneitem_info.scale.y
 
-            obs.obs_sceneitem_set_info(sceneitem, sceneitem_info)
+            obs.obs_sceneitem_set_info2(sceneitem, sceneitem_info)
 
             log("WARNING: Found existing non-boundingbox transform. This may cause issues with zooming.\n" ..
                 "         Settings have been auto converted to a bounding box scaling transfrom instead.\n" ..
@@ -660,11 +637,11 @@ function refresh_sceneitem(find_newest)
                                     zoom_info.source_crop_filter.w + obs.obs_data_get_int(settings, "cx")
                                 zoom_info.source_crop_filter.h =
                                     zoom_info.source_crop_filter.h + obs.obs_data_get_int(settings, "cy")
-                                log("Found existing non-relative crop/pad filter (" ..
+                                log("Found existing relative crop/pad filter (" ..
                                     name ..
                                     "). Applying settings " .. format_table(zoom_info.source_crop_filter))
                             else
-                                log("WARNING: Found existing relative crop/pad filter (" .. name .. ").\n" ..
+                                log("WARNING: Found existing non-relative crop/pad filter (" .. name .. ").\n" ..
                                     "         This will cause issues with zooming. Convert to relative settings instead.")
                             end
                             obs.obs_data_release(settings)
@@ -1001,57 +978,6 @@ function on_timer()
     end
 end
 
-function on_socket_timer()
-    if not socket_server then
-        return
-    end
-
-    repeat
-        local data, status = socket_server:receive_from()
-        if data then
-            local sx, sy = data:match("(-?%d+) (-?%d+)")
-            if sx and sy then
-                local x = tonumber(sx, 10)
-                local y = tonumber(sy, 10)
-                if not socket_mouse then
-                    log("Socket server client connected")
-                    socket_mouse = { x = x, y = y }
-                else
-                    socket_mouse.x = x
-                    socket_mouse.y = y
-                end
-            end
-        elseif status ~= "timeout" then
-            error(status)
-        end
-    until data == nil
-end
-
-function start_server()
-    if socket_available then
-        local address = socket.find_first_address("*", socket_port)
-
-        socket_server = socket.create("inet", "dgram", "udp")
-        if socket_server ~= nil then
-            socket_server:set_option("reuseaddr", 1)
-            socket_server:set_blocking(false)
-            socket_server:bind(address, socket_port)
-            obs.timer_add(on_socket_timer, socket_poll)
-            log("Socket server listening on port " .. socket_port .. "...")
-        end
-    end
-end
-
-function stop_server()
-    if socket_server ~= nil then
-        log("Socket server stopped")
-        obs.timer_remove(on_socket_timer)
-        socket_server:close()
-        socket_server = nil
-        socket_mouse = nil
-    end
-end
-
 function set_crop_settings(crop)
     if crop_filter ~= nil and crop_filter_settings ~= nil then
         -- Call into OBS to update our crop filter with the new settings
@@ -1073,34 +999,16 @@ end
 
 function on_frontend_event(event)
     if event == obs.OBS_FRONTEND_EVENT_SCENE_CHANGED then
-        log("OBS Scene changed")
+        log("Scene changed")
         -- If the scene changes we attempt to find a new source with the same name in this new scene
         -- TODO: There probably needs to be a way for users to specify what source they want to use in each scene
-        -- Scene change can happen before OBS has completely loaded, so we check for that here
-        if is_obs_loaded then
-            refresh_sceneitem(true)
-        end
-    elseif event == obs.OBS_FRONTEND_EVENT_FINISHED_LOADING then
-        log("OBS Loaded")
-        -- Once loaded we perform our initial lookup
-        is_obs_loaded = true
-        monitor_info = get_monitor_info(source)
         refresh_sceneitem(true)
-    elseif event == obs.OBS_FRONTEND_EVENT_SCRIPTING_SHUTDOWN then
-        log("OBS Shutting down")
-        -- Add a fail-safe for unloading the script during shutdown
-        if is_script_loaded then
-            script_unload()
-        end
     end
 end
 
 function on_update_transform()
     -- Update the crop/size settings based on whatever the source in the current scene looks like
-    if is_obs_loaded then
-        refresh_sceneitem(true)
-    end
-
+    refresh_sceneitem(true)
     return true
 end
 
@@ -1110,7 +1018,6 @@ function on_settings_modified(props, prop, settings)
     -- Show/Hide the settings based on if the checkbox is checked or not
     if name == "use_monitor_override" then
         local visible = obs.obs_data_get_bool(settings, "use_monitor_override")
-        obs.obs_property_set_visible(obs.obs_properties_get(props, "monitor_override_label"), not visible)
         obs.obs_property_set_visible(obs.obs_properties_get(props, "monitor_override_x"), visible)
         obs.obs_property_set_visible(obs.obs_properties_get(props, "monitor_override_y"), visible)
         obs.obs_property_set_visible(obs.obs_properties_get(props, "monitor_override_w"), visible)
@@ -1119,12 +1026,6 @@ function on_settings_modified(props, prop, settings)
         obs.obs_property_set_visible(obs.obs_properties_get(props, "monitor_override_sy"), visible)
         obs.obs_property_set_visible(obs.obs_properties_get(props, "monitor_override_dw"), visible)
         obs.obs_property_set_visible(obs.obs_properties_get(props, "monitor_override_dh"), visible)
-        return true
-    elseif name == "use_socket" then
-        local visible = obs.obs_data_get_bool(settings, "use_socket")
-        obs.obs_property_set_visible(obs.obs_properties_get(props, "socket_label"), not visible)
-        obs.obs_property_set_visible(obs.obs_properties_get(props, "socket_port"), visible)
-        obs.obs_property_set_visible(obs.obs_properties_get(props, "socket_poll"), visible)
         return true
     elseif name == "allow_all_sources" then
         local sources_list = obs.obs_properties_get(props, "source")
@@ -1160,15 +1061,10 @@ function log_current_settings()
         monitor_override_sy = monitor_override_sy,
         monitor_override_dw = monitor_override_dw,
         monitor_override_dh = monitor_override_dh,
-        use_socket = use_socket,
-        socket_port = socket_port,
-        socket_poll = socket_poll,
-        debug_logs = debug_logs,
-        version = VERSION
+        debug_logs = debug_logs
     }
 
-    log("OBS Version: " .. string.format("%.1f", major) .. "." .. minor)
-    log("Platform: " .. ffi.os)
+    log("OBS Version: " .. string.format("%.1f", major))
     log("Current settings:")
     log(format_table(settings))
 end
@@ -1197,16 +1093,7 @@ function on_print_help()
         "Scale X: The x scale factor to apply to the mouse position if the source size is not 1:1 (useful for cloned sources)\n" ..
         "Scale Y: The y scale factor to apply to the mouse position if the source size is not 1:1 (useful for cloned sources)\n" ..
         "Monitor Width: The width of the monitor that is showing the source (in pixels)\n" ..
-        "Monitor Height: The height of the monitor that is showing the source (in pixels)\n"
-
-    if socket_available then
-        help = help ..
-            "Enable remote mouse listener: True to start a UDP socket server that will listen for mouse position messages from a remote client, see: https://github.com/BlankSourceCode/obs-zoom-to-mouse-remote\n" ..
-            "Port: The port number to use for the socket server\n" ..
-            "Poll Delay: The time between updating the mouse position (in milliseconds)\n"
-    end
-
-    help = help ..
+        "Monitor Height: The height of the monitor that is showing the source (in pixels)\n" ..
         "More Info: Show this text in the script log\n" ..
         "Enable debug logging: Show additional debug information in the script log\n\n"
 
@@ -1259,46 +1146,23 @@ function script_properties()
     obs.obs_property_set_long_description(allow_all, "Enable to allow selecting any source as the Zoom Source\n" ..
         "You MUST set manual source position for non-display capture sources")
 
-    local override_props = obs.obs_properties_create();
-    local override_label = obs.obs_properties_add_text(override_props, "monitor_override_label", "", obs.OBS_TEXT_INFO)
-    local override_x = obs.obs_properties_add_int(override_props, "monitor_override_x", "X", -10000, 10000, 1)
-    local override_y = obs.obs_properties_add_int(override_props, "monitor_override_y", "Y", -10000, 10000, 1)
-    local override_w = obs.obs_properties_add_int(override_props, "monitor_override_w", "Width", 0, 10000, 1)
-    local override_h = obs.obs_properties_add_int(override_props, "monitor_override_h", "Height", 0, 10000, 1)
-    local override_sx = obs.obs_properties_add_float(override_props, "monitor_override_sx", "Scale X ", 0, 100, 0.01)
-    local override_sy = obs.obs_properties_add_float(override_props, "monitor_override_sy", "Scale Y ", 0, 100, 0.01)
-    local override_dw = obs.obs_properties_add_int(override_props, "monitor_override_dw", "Monitor Width ", 0, 10000, 1)
-    local override_dh = obs.obs_properties_add_int(override_props, "monitor_override_dh", "Monitor Height ", 0, 10000, 1)
-    local override = obs.obs_properties_add_group(props, "use_monitor_override", "Set manual source position ",
-        obs.OBS_GROUP_CHECKABLE, override_props)
-
-    obs.obs_property_set_long_description(override_label,
+    local override = obs.obs_properties_add_bool(props, "use_monitor_override", "Set manual source position ")
+    obs.obs_property_set_long_description(override,
         "When enabled the specified size/position settings will be used for the zoom source instead of the auto-calculated ones")
+
+    local override_x = obs.obs_properties_add_int(props, "monitor_override_x", "X", -10000, 10000, 1)
+    local override_y = obs.obs_properties_add_int(props, "monitor_override_y", "Y", -10000, 10000, 1)
+    local override_w = obs.obs_properties_add_int(props, "monitor_override_w", "Width", 0, 10000, 1)
+    local override_h = obs.obs_properties_add_int(props, "monitor_override_h", "Height", 0, 10000, 1)
+    local override_sx = obs.obs_properties_add_float(props, "monitor_override_sx", "Scale X ", 0, 100, 0.01)
+    local override_sy = obs.obs_properties_add_float(props, "monitor_override_sy", "Scale Y ", 0, 100, 0.01)
+    local override_dw = obs.obs_properties_add_int(props, "monitor_override_dw", "Monitor Width ", 0, 10000, 1)
+    local override_dh = obs.obs_properties_add_int(props, "monitor_override_dh", "Monitor Height ", 0, 10000, 1)
+
     obs.obs_property_set_long_description(override_sx, "Usually 1 - unless you are using a scaled source")
     obs.obs_property_set_long_description(override_sy, "Usually 1 - unless you are using a scaled source")
     obs.obs_property_set_long_description(override_dw, "X resolution of your montior")
     obs.obs_property_set_long_description(override_dh, "Y resolution of your monitor")
-
-    if socket_available then
-        local socket_props = obs.obs_properties_create();
-        local r_label = obs.obs_properties_add_text(socket_props, "socket_label", "", obs.OBS_TEXT_INFO)
-        local r_port = obs.obs_properties_add_int(socket_props, "socket_port", "Port ", 1024, 65535, 1)
-        local r_poll = obs.obs_properties_add_int(socket_props, "socket_poll", "Poll Delay (ms) ", 0, 1000, 1)
-        local socket = obs.obs_properties_add_group(props, "use_socket", "Enable remote mouse listener ",
-            obs.OBS_GROUP_CHECKABLE, socket_props)
-
-        obs.obs_property_set_long_description(r_label,
-            "When enabled a UDP socket server will listen for mouse position messages from a remote client")
-        obs.obs_property_set_long_description(r_port,
-            "You must restart the server after changing the port (Uncheck then re-check 'Enable remote mouse listener')")
-        obs.obs_property_set_long_description(r_poll,
-            "You must restart the server after changing the poll delay (Uncheck then re-check 'Enable remote mouse listener')")
-
-        obs.obs_property_set_visible(r_label, not use_socket)
-        obs.obs_property_set_visible(r_port, use_socket)
-        obs.obs_property_set_visible(r_poll, use_socket)
-        obs.obs_property_set_modified_callback(socket, on_settings_modified)
-    end
 
     -- Add a button for more information
     local help = obs.obs_properties_add_button(props, "help_button", "More Info", on_print_help)
@@ -1309,7 +1173,6 @@ function script_properties()
     obs.obs_property_set_long_description(debug,
         "When enabled the script will output diagnostics messages to the script log (useful for debugging/github issues)")
 
-    obs.obs_property_set_visible(override_label, not use_monitor_override)
     obs.obs_property_set_visible(override_x, use_monitor_override)
     obs.obs_property_set_visible(override_y, use_monitor_override)
     obs.obs_property_set_visible(override_w, use_monitor_override)
@@ -1319,7 +1182,6 @@ function script_properties()
     obs.obs_property_set_visible(override_dw, use_monitor_override)
     obs.obs_property_set_visible(override_dh, use_monitor_override)
     obs.obs_property_set_modified_callback(override, on_settings_modified)
-
     obs.obs_property_set_modified_callback(allow_all, on_settings_modified)
     obs.obs_property_set_modified_callback(debug, on_settings_modified)
 
@@ -1328,11 +1190,6 @@ end
 
 function script_load(settings)
     sceneitem_info_orig = nil
-
-    -- Workaround for detecting if OBS is already loaded and we were reloaded using "Reload Scripts"
-    local current_scene = obs.obs_frontend_get_current_scene()
-    is_obs_loaded = current_scene ~= nil -- Current scene is nil on first OBS load
-    obs.obs_source_release(current_scene)
 
     -- Add our hotkey
     hotkey_zoom_id = obs.obs_hotkey_register_frontend("toggle_zoom_hotkey", "Toggle zoom to mouse",
@@ -1369,9 +1226,6 @@ function script_load(settings)
     monitor_override_sy = obs.obs_data_get_double(settings, "monitor_override_sy")
     monitor_override_dw = obs.obs_data_get_int(settings, "monitor_override_dw")
     monitor_override_dh = obs.obs_data_get_int(settings, "monitor_override_dh")
-    use_socket = obs.obs_data_get_bool(settings, "use_socket")
-    socket_port = obs.obs_data_get_int(settings, "socket_port")
-    socket_poll = obs.obs_data_get_int(settings, "socket_poll")
     debug_logs = obs.obs_data_get_bool(settings, "debug_logs")
 
     obs.obs_frontend_add_event_callback(on_frontend_event)
@@ -1396,17 +1250,11 @@ function script_load(settings)
         log("ERROR: Could not get X11 Display for Linux\n" ..
             "Mouse position will be incorrect.")
     end
-
-    source_name = ""
-    use_socket = false
-    is_script_loaded = true
 end
 
 function script_unload()
-    is_script_loaded = false
-
     -- Clean up the memory usage
-    if major > 29.1 or (major == 29.1 and minor > 2) then -- 29.1.2 and below seems to crash if you do this, so we ignore it as the script is closing anyway
+    if major > 29.0 then -- 29.0 seems to crash if you do this, so we ignore it as the script is closing anyway
         local transitions = obs.obs_frontend_get_transitions()
         if transitions ~= nil then
             for i, s in pairs(transitions) do
@@ -1424,12 +1272,6 @@ function script_unload()
 
     if x11_lib ~= nil and x11_display ~= nil then
         x11_lib.XCloseDisplay(x11_display)
-        x11_display = nil
-        x11_lib = nil
-    end
-
-    if socket_server ~= nil then
-        stop_server()
     end
 end
 
@@ -1453,9 +1295,6 @@ function script_defaults(settings)
     obs.obs_data_set_default_double(settings, "monitor_override_sy", 1)
     obs.obs_data_set_default_int(settings, "monitor_override_dw", 1920)
     obs.obs_data_set_default_int(settings, "monitor_override_dh", 1080)
-    obs.obs_data_set_default_bool(settings, "use_socket", false)
-    obs.obs_data_set_default_int(settings, "socket_port", 12345)
-    obs.obs_data_set_default_int(settings, "socket_poll", 10)
     obs.obs_data_set_default_bool(settings, "debug_logs", false)
 end
 
@@ -1485,9 +1324,6 @@ function script_update(settings)
     local old_sy = monitor_override_sy
     local old_dw = monitor_override_dw
     local old_dh = monitor_override_dh
-    local old_socket = use_socket
-    local old_port = socket_port
-    local old_poll = socket_poll
 
     -- Update the settings
     source_name = obs.obs_data_get_string(settings, "source")
@@ -1509,13 +1345,10 @@ function script_update(settings)
     monitor_override_sy = obs.obs_data_get_double(settings, "monitor_override_sy")
     monitor_override_dw = obs.obs_data_get_int(settings, "monitor_override_dw")
     monitor_override_dh = obs.obs_data_get_int(settings, "monitor_override_dh")
-    use_socket = obs.obs_data_get_bool(settings, "use_socket")
-    socket_port = obs.obs_data_get_int(settings, "socket_port")
-    socket_poll = obs.obs_data_get_int(settings, "socket_poll")
     debug_logs = obs.obs_data_get_bool(settings, "debug_logs")
 
     -- Only do the expensive refresh if the user selected a new source
-    if source_name ~= old_source_name and is_obs_loaded then
+    if source_name ~= old_source_name then
         refresh_sceneitem(true)
     end
 
@@ -1530,20 +1363,7 @@ function script_update(settings)
         monitor_override_sy ~= old_sy or
         monitor_override_w ~= old_dw or
         monitor_override_h ~= old_dh then
-        if is_obs_loaded then
-            monitor_info = get_monitor_info(source)
-        end
-    end
-
-    if old_socket ~= use_socket then
-        if use_socket then
-            start_server()
-        else
-            stop_server()
-        end
-    elseif use_socket and (old_poll ~= socket_poll or old_port ~= socket_port) then
-        stop_server()
-        start_server()
+        monitor_info = get_monitor_info(source)
     end
 end
 
