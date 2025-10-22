@@ -5,6 +5,7 @@ An OBS lua script to zoom a display-capture source to focus on the mouse.
 I made this for my own use when recording videos as I wanted a way to zoom into my IDE when highlighting certain sections of code. My particular setup didn't seem to work very well with the existing zooming solutions so I created this.
 
 Built with OBS v29.1.3
+Now compatible with OBS Studio up to v32.0+
 
 Now works on **Windows**, **Linux**, and **Mac**
 

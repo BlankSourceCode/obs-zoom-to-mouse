@@ -3,10 +3,12 @@
 -- An OBS lua script to zoom a display-capture source to focus on the mouse.
 -- Copyright (c) BlankSourceCode.  All rights reserved.
 --
+-- Compatible with OBS Studio 29.1.3 through 32.0+
+--
 
 local obs = obslua
 local ffi = require("ffi")
-local VERSION = "1.0.2"
+local VERSION = "1.0.3"
 local CROP_FILTER_NAME = "obs-zoom-to-mouse-crop"
 
 local socket_available, socket = pcall(require, "ljsocket")
@@ -86,6 +88,24 @@ local version = obs.obs_get_version_string()
 local m1, m2 = version:match("(%d+%.%d+)%.(%d+)")
 local major = tonumber(m1) or 0
 local minor = tonumber(m2) or 0
+
+-- Compatibility functions for OBS API changes
+-- obs_sceneitem_get_info/set_info were deprecated in OBS 30.1 in favor of obs_sceneitem_get_info2/set_info2
+function sceneitem_get_info_compat(sceneitem, info)
+    if obs.obs_sceneitem_get_info2 then
+        return obs.obs_sceneitem_get_info2(sceneitem, info)
+    else
+        return obs.obs_sceneitem_get_info(sceneitem, info)
+    end
+end
+
+function sceneitem_set_info_compat(sceneitem, info)
+    if obs.obs_sceneitem_set_info2 then
+        return obs.obs_sceneitem_set_info2(sceneitem, info)
+    else
+        return obs.obs_sceneitem_set_info(sceneitem, info)
+    end
+end
 
 -- Define the mouse cursor functions for each platform
 if ffi.os == "Windows" then
@@ -448,7 +468,7 @@ function release_sceneitem()
 
         if sceneitem_info_orig ~= nil then
             log("Transform info reset back to original")
-            obs.obs_sceneitem_get_info(sceneitem, sceneitem_info_orig)
+            sceneitem_get_info_compat(sceneitem, sceneitem_info_orig)
             sceneitem_info_orig = nil
         end
 
@@ -574,13 +594,13 @@ function refresh_sceneitem(find_newest)
     if sceneitem ~= nil then
         -- Capture the original settings so we can restore them later
         sceneitem_info_orig = obs.obs_transform_info()
-        obs.obs_sceneitem_get_info(sceneitem, sceneitem_info_orig)
+        sceneitem_get_info_compat(sceneitem, sceneitem_info_orig)
 
         sceneitem_crop_orig = obs.obs_sceneitem_crop()
         obs.obs_sceneitem_get_crop(sceneitem, sceneitem_crop_orig)
 
         sceneitem_info = obs.obs_transform_info()
-        obs.obs_sceneitem_get_info(sceneitem, sceneitem_info)
+        sceneitem_get_info_compat(sceneitem, sceneitem_info)
 
         sceneitem_crop = obs.obs_sceneitem_crop()
         obs.obs_sceneitem_get_crop(sceneitem, sceneitem_crop)
@@ -631,7 +651,7 @@ function refresh_sceneitem(find_newest)
             sceneitem_info.bounds.x = source_width * sceneitem_info.scale.x
             sceneitem_info.bounds.y = source_height * sceneitem_info.scale.y
 
-            obs.obs_sceneitem_set_info(sceneitem, sceneitem_info)
+            sceneitem_set_info_compat(sceneitem, sceneitem_info)
 
             log("WARNING: Found existing non-boundingbox transform. This may cause issues with zooming.\n" ..
                 "         Settings have been auto converted to a bounding box scaling transfrom instead.\n" ..
