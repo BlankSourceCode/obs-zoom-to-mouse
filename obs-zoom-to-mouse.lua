@@ -448,9 +448,39 @@ function release_sceneitem()
 
         if sceneitem_info_orig ~= nil then
             log("Transform info reset back to original")
-            obs.obs_sceneitem_get_info(sceneitem, sceneitem_info_orig)
+
+            -- Restore position
+            local pos = obs.vec2()
+            pos.x = sceneitem_info_orig.pos.x
+            pos.y = sceneitem_info_orig.pos.y
+            obs.obs_sceneitem_set_pos(sceneitem, pos)
+
+            -- Restore scale
+            local scale = obs.vec2()
+            scale.x = sceneitem_info_orig.scale.x
+            scale.y = sceneitem_info_orig.scale.y
+            obs.obs_sceneitem_set_scale(sceneitem, scale)
+
+            -- Restore rotation
+            obs.obs_sceneitem_set_rot(sceneitem, sceneitem_info_orig.rot or 0)
+
+            -- Restore bounds (if your OBS version supports these)
+            if sceneitem_info_orig.bounds_type then
+                obs.obs_sceneitem_set_bounds_type(sceneitem, sceneitem_info_orig.bounds_type)
+            end
+            if sceneitem_info_orig.bounds_alignment then
+                obs.obs_sceneitem_set_bounds_alignment(sceneitem, sceneitem_info_orig.bounds_alignment)
+            end
+            if sceneitem_info_orig.bounds then
+                local bounds = obs.vec2()
+                bounds.x = sceneitem_info_orig.bounds.x
+                bounds.y = sceneitem_info_orig.bounds.y
+                obs.obs_sceneitem_set_bounds(sceneitem, bounds)
+            end
+
             sceneitem_info_orig = nil
         end
+
 
         if sceneitem_crop_orig ~= nil then
             log("Transform crop reset back to original")
@@ -572,21 +602,43 @@ function refresh_sceneitem(find_newest)
     end
 
     if sceneitem ~= nil then
-        -- Capture the original settings so we can restore them later
-        sceneitem_info_orig = obs.obs_transform_info()
-        obs.obs_sceneitem_get_info(sceneitem, sceneitem_info_orig)
+        -- Capture the original transform and crop data
+        local pos = obs.vec2()
+        local scale = obs.vec2()
+        local bounds = obs.vec2()
+        local crop = obs.obs_sceneitem_crop()
 
-        sceneitem_crop_orig = obs.obs_sceneitem_crop()
-        obs.obs_sceneitem_get_crop(sceneitem, sceneitem_crop_orig)
+        obs.obs_sceneitem_get_pos(sceneitem, pos)
+        obs.obs_sceneitem_get_scale(sceneitem, scale)
+        obs.obs_sceneitem_get_bounds(sceneitem, bounds)
+        obs.obs_sceneitem_get_crop(sceneitem, crop)
 
-        sceneitem_info = obs.obs_transform_info()
-        obs.obs_sceneitem_get_info(sceneitem, sceneitem_info)
+        -- orig info
+        sceneitem_info_orig = {
+            pos = { x = pos.x, y = pos.y },
+            scale = { x = scale.x, y = scale.y },
+            bounds = { x = bounds.x, y = bounds.y },
+            bounds_type = obs.obs_sceneitem_get_bounds_type(sceneitem),
+            bounds_alignment = obs.obs_sceneitem_get_bounds_alignment(sceneitem),
+            rot = obs.obs_sceneitem_get_rot(sceneitem)
+        }
 
+        -- Duplicate a working copy for modifying
+        sceneitem_info = {
+            pos = { x = pos.x, y = pos.y },
+            scale = { x = scale.x, y = scale.y },
+            bounds = { x = bounds.x, y = bounds.y },
+            bounds_type = obs.obs_sceneitem_get_bounds_type(sceneitem),
+            bounds_alignment = obs.obs_sceneitem_get_bounds_alignment(sceneitem),
+            rot = obs.obs_sceneitem_get_rot(sceneitem)
+        }
+
+        -- Separate crop objects
+        sceneitem_crop_orig = crop
         sceneitem_crop = obs.obs_sceneitem_crop()
         obs.obs_sceneitem_get_crop(sceneitem, sceneitem_crop)
 
         if is_non_display_capture then
-            -- Non-Display Capture sources don't correctly report crop values
             sceneitem_crop_orig.left = 0
             sceneitem_crop_orig.top = 0
             sceneitem_crop_orig.right = 0
@@ -627,16 +679,34 @@ function refresh_sceneitem(find_newest)
         -- Ideally the user just has a valid one set and we don't have to change anything because this might not work 100% of the time
         if sceneitem_info.bounds_type == obs.OBS_BOUNDS_NONE then
             sceneitem_info.bounds_type = obs.OBS_BOUNDS_SCALE_INNER
-            sceneitem_info.bounds_alignment = 5 -- (5 == OBS_ALIGN_TOP | OBS_ALIGN_LEFT) (0 == OBS_ALIGN_CENTER)
+            sceneitem_info.bounds_alignment = 5 -- (5 == OBS_ALIGN_TOP | OBS_ALIGN_LEFT)
             sceneitem_info.bounds.x = source_width * sceneitem_info.scale.x
             sceneitem_info.bounds.y = source_height * sceneitem_info.scale.y
 
-            obs.obs_sceneitem_set_info(sceneitem, sceneitem_info)
+            -- Apply updated transform manually
+            local pos = obs.vec2()
+            local scale = obs.vec2()
+            local bounds = obs.vec2()
+
+            pos.x = sceneitem_info.pos.x
+            pos.y = sceneitem_info.pos.y
+            scale.x = sceneitem_info.scale.x
+            scale.y = sceneitem_info.scale.y
+            bounds.x = sceneitem_info.bounds.x
+            bounds.y = sceneitem_info.bounds.y
+
+            obs.obs_sceneitem_set_pos(sceneitem, pos)
+            obs.obs_sceneitem_set_scale(sceneitem, scale)
+            obs.obs_sceneitem_set_bounds(sceneitem, bounds)
+            obs.obs_sceneitem_set_bounds_type(sceneitem, sceneitem_info.bounds_type)
+            obs.obs_sceneitem_set_bounds_alignment(sceneitem, sceneitem_info.bounds_alignment)
+            obs.obs_sceneitem_set_rot(sceneitem, sceneitem_info.rot)
 
             log("WARNING: Found existing non-boundingbox transform. This may cause issues with zooming.\n" ..
-                "         Settings have been auto converted to a bounding box scaling transfrom instead.\n" ..
+                "         Settings have been auto converted to a bounding box scaling transform instead.\n" ..
                 "         If you have issues with your layout consider making the transform use a bounding box manually.")
         end
+
 
         -- Get information about any existing crop filters (that aren't ours)
         zoom_info.source_crop_filter = { x = 0, y = 0, w = 0, h = 0 }
