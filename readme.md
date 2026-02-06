@@ -126,6 +126,76 @@ Note: If you are also using a `transform crop` on the non-display capture source
 * Using Mac:
    * When using `Set manual source position` you may need to set the `Monitor Height` value as it is used to invert the Y coordinate of the mouse position so that it matches the values of Windows and Linux that the script expects.
 
+## Mac Retina Display Setup Guide
+
+Mac Retina displays have two resolutions:
+* **Logical resolution**: The coordinate system used by the mouse (e.g., 1512 x 982)
+* **Physical resolution**: The actual pixel resolution, typically 2x the logical resolution (e.g., 3024 x 1964)
+
+### Step 1: OBS Canvas Settings
+
+Go to **Settings → Video**:
+| Setting | Recommended Value |
+|---------|-------------------|
+| Base (Canvas) Resolution | Physical resolution (e.g., 3024 x 1964) |
+| Output (Scaled) Resolution | As needed (e.g., 1812 x 1178) |
+
+### Step 2: Display Capture Transform Settings
+
+Right-click your Display Capture source → **Transform → Edit Transform**:
+
+| Setting | Value |
+|---------|-------|
+| Position | 0, 0 |
+| Positional Alignment | Top Left |
+| Bounding Box Type | Scale to inner bounds |
+| Alignment in Bounding Box | **Top Left** (Important! Not Center) |
+| Bounding Box Size | Same as canvas (e.g., 3024 x 1964) |
+| Crop | All 0 px |
+
+> **Tip:** If values look wrong, click **Reset** first, then configure.
+
+### Step 3: Script Manual Source Position Settings
+
+Enable **Set manual source position** and configure:
+
+| Setting | Value | Description |
+|---------|-------|-------------|
+| X | 0 | Top-left X coordinate |
+| Y | 0 | Top-left Y coordinate |
+| Width | 1512 | Mac logical resolution width |
+| Height | 982 | Mac logical resolution height |
+| Scale X | 2.0 | Physical ÷ Logical width |
+| Scale Y | 2.0 | Physical ÷ Logical height |
+| Monitor Width | 1512 | Mac logical resolution width |
+| Monitor Height | 982 | Mac logical resolution height (used for Y-axis inversion) |
+
+### Calculating Scale Values
+
+```
+Scale X = Physical Width ÷ Logical Width
+Scale Y = Physical Height ÷ Logical Height
+```
+
+Example:
+* Logical: 1512 x 982
+* Physical: 3024 x 1964
+* Scale X = 3024 ÷ 1512 = **2.0**
+* Scale Y = 1964 ÷ 982 = **2.0**
+
+### How to Find Your Mac Resolution
+
+1. **System Settings → Displays** - Shows the "Looks like" resolution (logical resolution)
+2. Physical resolution is typically 2x the logical resolution for Retina displays
+
+### Troubleshooting
+
+| Problem | Solution |
+|---------|----------|
+| Screen shrinks instead of zooming in | Set "Alignment in Bounding Box" to **Top Left** |
+| Mouse tracking position is offset | Check Scale X/Y values (usually 2.0 for Retina) |
+| Tracking still offset after setting Scale | Verify Width/Height match Mac logical resolution |
+
 ## Development Setup
 * Clone this repo
 * Edit `obs-zoom-to-mouse.lua`
