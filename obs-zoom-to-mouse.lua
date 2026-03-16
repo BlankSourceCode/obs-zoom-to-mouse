@@ -87,6 +87,33 @@ local m1, m2 = version:match("(%d+%.%d+)%.(%d+)")
 local major = tonumber(m1) or 0
 local minor = tonumber(m2) or 0
 
+-- Compatibility helpers for scene item transform APIs.
+-- Different OBS versions expose either *_get_info / *_set_info or
+-- *_get_transform / *_set_transform to Lua, or sometimes neither.
+local function sceneitem_get_transform(sceneitem, info)
+    if sceneitem == nil or info == nil then
+        return
+    end
+
+    if obs.obs_sceneitem_get_transform then
+        obs.obs_sceneitem_get_transform(sceneitem, info)
+    elseif obs.obs_sceneitem_get_info then
+        obs.obs_sceneitem_get_info(sceneitem, info)
+    end
+end
+
+local function sceneitem_set_transform(sceneitem, info)
+    if sceneitem == nil or info == nil then
+        return
+    end
+
+    if obs.obs_sceneitem_set_transform then
+        obs.obs_sceneitem_set_transform(sceneitem, info)
+    elseif obs.obs_sceneitem_set_info then
+        obs.obs_sceneitem_set_info(sceneitem, info)
+    end
+end
+
 -- Define the mouse cursor functions for each platform
 if ffi.os == "Windows" then
     ffi.cdef([[
@@ -448,7 +475,8 @@ function release_sceneitem()
 
         if sceneitem_info_orig ~= nil then
             log("Transform info reset back to original")
-            obs.obs_sceneitem_get_info(sceneitem, sceneitem_info_orig)
+            -- Restore the original transform using the compatible helper.
+            sceneitem_set_transform(sceneitem, sceneitem_info_orig)
             sceneitem_info_orig = nil
         end
 
@@ -574,13 +602,13 @@ function refresh_sceneitem(find_newest)
     if sceneitem ~= nil then
         -- Capture the original settings so we can restore them later
         sceneitem_info_orig = obs.obs_transform_info()
-        obs.obs_sceneitem_get_info(sceneitem, sceneitem_info_orig)
+        sceneitem_get_transform(sceneitem, sceneitem_info_orig)
 
         sceneitem_crop_orig = obs.obs_sceneitem_crop()
         obs.obs_sceneitem_get_crop(sceneitem, sceneitem_crop_orig)
 
         sceneitem_info = obs.obs_transform_info()
-        obs.obs_sceneitem_get_info(sceneitem, sceneitem_info)
+        sceneitem_get_transform(sceneitem, sceneitem_info)
 
         sceneitem_crop = obs.obs_sceneitem_crop()
         obs.obs_sceneitem_get_crop(sceneitem, sceneitem_crop)
@@ -631,7 +659,7 @@ function refresh_sceneitem(find_newest)
             sceneitem_info.bounds.x = source_width * sceneitem_info.scale.x
             sceneitem_info.bounds.y = source_height * sceneitem_info.scale.y
 
-            obs.obs_sceneitem_set_info(sceneitem, sceneitem_info)
+            sceneitem_set_transform(sceneitem, sceneitem_info)
 
             log("WARNING: Found existing non-boundingbox transform. This may cause issues with zooming.\n" ..
                 "         Settings have been auto converted to a bounding box scaling transfrom instead.\n" ..
@@ -1554,9 +1582,21 @@ function populate_zoom_sources(list)
     if sources ~= nil then
         local dc_info = get_dc_info()
         obs.obs_property_list_add_string(list, "<None>", "obs-zoom-to-mouse-none")
+        local added_any = false
         for _, source in ipairs(sources) do
             local source_type = obs.obs_source_get_id(source)
-            if source_type == dc_info.source_id or allow_all_sources then
+            if (dc_info ~= nil and source_type == dc_info.source_id) or allow_all_sources then
+                local name = obs.obs_source_get_name(source)
+                obs.obs_property_list_add_string(list, name, name)
+                added_any = true
+            end
+        end
+
+        -- Fallback for platforms where display capture source IDs are unknown or have changed.
+        -- If we didn't find any matches using dc_info and the user hasn't explicitly restricted
+        -- the list with allow_all_sources, then include all sources so the user can still select one.
+        if not added_any and not allow_all_sources then
+            for _, source in ipairs(sources) do
                 local name = obs.obs_source_get_name(source)
                 obs.obs_property_list_add_string(list, name, name)
             end
