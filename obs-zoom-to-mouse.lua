@@ -87,6 +87,43 @@ local m1, m2 = version:match("(%d+%.%d+)%.(%d+)")
 local major = tonumber(m1) or 0
 local minor = tonumber(m2) or 0
 
+---
+-- OBS API COMPATIBILITY SHIM
+-- obs_sceneitem_get_info/obs_sceneitem_set_info were removed from the Lua bindings
+-- (obslua) in newer OBS Studio releases and replaced by obs_sceneitem_get_info2/
+-- obs_sceneitem_set_info2 (added in OBS 30.1). The "2" versions behave the same
+-- but also read/write the extra crop_to_bounds field on obs_transform_info.
+-- These wrappers pick whichever function actually exists at runtime so the
+-- script keeps working on both old and new OBS versions without branching
+-- all over the rest of the code.
+local use_info2 = obs.obs_sceneitem_get_info2 ~= nil and obs.obs_sceneitem_set_info2 ~= nil
+
+---
+-- Gets the transform info for a sceneitem, using obs_sceneitem_get_info2 when
+-- available and falling back to the legacy obs_sceneitem_get_info otherwise
+---@param item any The sceneitem to read the transform from
+---@param info any An obs.obs_transform_info() to populate
+local function sceneitem_get_transform_info(item, info)
+    if use_info2 then
+        obs.obs_sceneitem_get_info2(item, info)
+    else
+        obs.obs_sceneitem_get_info(item, info)
+    end
+end
+
+---
+-- Sets the transform info for a sceneitem, using obs_sceneitem_set_info2 when
+-- available and falling back to the legacy obs_sceneitem_set_info otherwise
+---@param item any The sceneitem to apply the transform to
+---@param info any An obs.obs_transform_info() with the values to apply
+local function sceneitem_set_transform_info(item, info)
+    if use_info2 then
+        obs.obs_sceneitem_set_info2(item, info)
+    else
+        obs.obs_sceneitem_set_info(item, info)
+    end
+end
+
 -- Define the mouse cursor functions for each platform
 if ffi.os == "Windows" then
     ffi.cdef([[
@@ -448,7 +485,7 @@ function release_sceneitem()
 
         if sceneitem_info_orig ~= nil then
             log("Transform info reset back to original")
-            obs.obs_sceneitem_get_info(sceneitem, sceneitem_info_orig)
+            sceneitem_set_transform_info(sceneitem, sceneitem_info_orig)
             sceneitem_info_orig = nil
         end
 
@@ -574,13 +611,13 @@ function refresh_sceneitem(find_newest)
     if sceneitem ~= nil then
         -- Capture the original settings so we can restore them later
         sceneitem_info_orig = obs.obs_transform_info()
-        obs.obs_sceneitem_get_info(sceneitem, sceneitem_info_orig)
+        sceneitem_get_transform_info(sceneitem, sceneitem_info_orig)
 
         sceneitem_crop_orig = obs.obs_sceneitem_crop()
         obs.obs_sceneitem_get_crop(sceneitem, sceneitem_crop_orig)
 
         sceneitem_info = obs.obs_transform_info()
-        obs.obs_sceneitem_get_info(sceneitem, sceneitem_info)
+        sceneitem_get_transform_info(sceneitem, sceneitem_info)
 
         sceneitem_crop = obs.obs_sceneitem_crop()
         obs.obs_sceneitem_get_crop(sceneitem, sceneitem_crop)
@@ -631,7 +668,7 @@ function refresh_sceneitem(find_newest)
             sceneitem_info.bounds.x = source_width * sceneitem_info.scale.x
             sceneitem_info.bounds.y = source_height * sceneitem_info.scale.y
 
-            obs.obs_sceneitem_set_info(sceneitem, sceneitem_info)
+            sceneitem_set_transform_info(sceneitem, sceneitem_info)
 
             log("WARNING: Found existing non-boundingbox transform. This may cause issues with zooming.\n" ..
                 "         Settings have been auto converted to a bounding box scaling transfrom instead.\n" ..
