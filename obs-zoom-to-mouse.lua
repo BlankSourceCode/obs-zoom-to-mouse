@@ -14,6 +14,7 @@ local socket_server = nil
 local socket_mouse = nil
 
 local source_name = ""
+local indicator_source_name = ""
 local source = nil
 local sceneitem = nil
 local sceneitem_info_orig = nil
@@ -71,6 +72,7 @@ local use_socket = false
 local socket_port = 0
 local socket_poll = 1000
 local debug_logs = false
+local enable_notification_sound = false
 local is_obs_loaded = false
 local is_script_loaded = false
 
@@ -448,7 +450,7 @@ function release_sceneitem()
 
         if sceneitem_info_orig ~= nil then
             log("Transform info reset back to original")
-            obs.obs_sceneitem_get_info(sceneitem, sceneitem_info_orig)
+            obs.obs_sceneitem_set_info2(sceneitem, sceneitem_info_orig)
             sceneitem_info_orig = nil
         end
 
@@ -574,13 +576,13 @@ function refresh_sceneitem(find_newest)
     if sceneitem ~= nil then
         -- Capture the original settings so we can restore them later
         sceneitem_info_orig = obs.obs_transform_info()
-        obs.obs_sceneitem_get_info(sceneitem, sceneitem_info_orig)
+        obs.obs_sceneitem_get_info2(sceneitem, sceneitem_info_orig)
 
         sceneitem_crop_orig = obs.obs_sceneitem_crop()
         obs.obs_sceneitem_get_crop(sceneitem, sceneitem_crop_orig)
 
         sceneitem_info = obs.obs_transform_info()
-        obs.obs_sceneitem_get_info(sceneitem, sceneitem_info)
+        obs.obs_sceneitem_get_info2(sceneitem, sceneitem_info)
 
         sceneitem_crop = obs.obs_sceneitem_crop()
         obs.obs_sceneitem_get_crop(sceneitem, sceneitem_crop)
@@ -631,7 +633,7 @@ function refresh_sceneitem(find_newest)
             sceneitem_info.bounds.x = source_width * sceneitem_info.scale.x
             sceneitem_info.bounds.y = source_height * sceneitem_info.scale.y
 
-            obs.obs_sceneitem_set_info(sceneitem, sceneitem_info)
+            obs.obs_sceneitem_set_info2(sceneitem, sceneitem_info)
 
             log("WARNING: Found existing non-boundingbox transform. This may cause issues with zooming.\n" ..
                 "         Settings have been auto converted to a bounding box scaling transfrom instead.\n" ..
@@ -825,12 +827,27 @@ function on_toggle_follow(pressed)
     end
 end
 
+---
+-- Show native macOS alert notification & sound
+---@param message string The message text
+function show_macos_notification(message)
+    if ffi.os == "OSX" then
+        if enable_notification_sound then
+            os.execute("afplay /System/Library/Sounds/Pop.aiff &")
+            os.execute("osascript -e 'display notification \"" .. message .. "\" with title \"OBS Zoom\" sound name \"Pop\"' &")
+        else
+            os.execute("osascript -e 'display notification \"" .. message .. "\" with title \"OBS Zoom\"' &")
+        end
+    end
+end
+
 function on_toggle_zoom(pressed)
     if pressed then
         -- Check if we are in a safe state to zoom
         if zoom_state == ZoomState.ZoomedIn or zoom_state == ZoomState.None then
             if zoom_state == ZoomState.ZoomedIn then
                 log("Zooming out")
+                show_macos_notification("Zoomed Out")
                 -- To zoom out, we set the target back to whatever it was originally
                 zoom_state = ZoomState.ZoomingOut
                 zoom_time = 0
@@ -843,6 +860,7 @@ function on_toggle_zoom(pressed)
                 end
             else
                 log("Zooming in")
+                show_macos_notification("Zoomed In (" .. string.format("%.1fx", zoom_value) .. ")")
                 -- To zoom in, we get a new target based on where the mouse was when zoom was clicked
                 zoom_state = ZoomState.ZoomingIn
                 zoom_info.zoom_to = zoom_value
@@ -1108,7 +1126,56 @@ function on_settings_modified(props, prop, settings)
     local name = obs.obs_property_name(prop)
 
     -- Show/Hide the settings based on if the checkbox is checked or not
-    if name == "use_monitor_override" then
+    if name == "device_preset" then
+        local preset = obs.obs_data_get_string(settings, "device_preset")
+        if preset == "mbp14" then
+            obs.obs_data_set_int(settings, "monitor_override_x", 0)
+            obs.obs_data_set_int(settings, "monitor_override_y", 0)
+            obs.obs_data_set_int(settings, "monitor_override_w", 3024)
+            obs.obs_data_set_int(settings, "monitor_override_h", 1964)
+            obs.obs_data_set_double(settings, "monitor_override_sx", 2.0)
+            obs.obs_data_set_double(settings, "monitor_override_sy", 2.0)
+            obs.obs_data_set_int(settings, "monitor_override_dw", 1512)
+            obs.obs_data_set_int(settings, "monitor_override_dh", 982)
+        elseif preset == "mbp16" then
+            obs.obs_data_set_int(settings, "monitor_override_x", 0)
+            obs.obs_data_set_int(settings, "monitor_override_y", 0)
+            obs.obs_data_set_int(settings, "monitor_override_w", 3456)
+            obs.obs_data_set_int(settings, "monitor_override_h", 2234)
+            obs.obs_data_set_double(settings, "monitor_override_sx", 2.0)
+            obs.obs_data_set_double(settings, "monitor_override_sy", 2.0)
+            obs.obs_data_set_int(settings, "monitor_override_dw", 1728)
+            obs.obs_data_set_int(settings, "monitor_override_dh", 1117)
+        elseif preset == "mba13" then
+            obs.obs_data_set_int(settings, "monitor_override_x", 0)
+            obs.obs_data_set_int(settings, "monitor_override_y", 0)
+            obs.obs_data_set_int(settings, "monitor_override_w", 2560)
+            obs.obs_data_set_int(settings, "monitor_override_h", 1664)
+            obs.obs_data_set_double(settings, "monitor_override_sx", 2.0)
+            obs.obs_data_set_double(settings, "monitor_override_sy", 2.0)
+            obs.obs_data_set_int(settings, "monitor_override_dw", 1280)
+            obs.obs_data_set_int(settings, "monitor_override_dh", 832)
+        elseif preset == "fhd" then
+            obs.obs_data_set_int(settings, "monitor_override_x", 0)
+            obs.obs_data_set_int(settings, "monitor_override_y", 0)
+            obs.obs_data_set_int(settings, "monitor_override_w", 1920)
+            obs.obs_data_set_int(settings, "monitor_override_h", 1080)
+            obs.obs_data_set_double(settings, "monitor_override_sx", 1.0)
+            obs.obs_data_set_double(settings, "monitor_override_sy", 1.0)
+            obs.obs_data_set_int(settings, "monitor_override_dw", 1920)
+            obs.obs_data_set_int(settings, "monitor_override_dh", 1080)
+        elseif preset == "uhd" then
+            obs.obs_data_set_int(settings, "monitor_override_x", 0)
+            obs.obs_data_set_int(settings, "monitor_override_y", 0)
+            obs.obs_data_set_int(settings, "monitor_override_w", 3840)
+            obs.obs_data_set_int(settings, "monitor_override_h", 2160)
+            obs.obs_data_set_double(settings, "monitor_override_sx", 1.0)
+            obs.obs_data_set_double(settings, "monitor_override_sy", 1.0)
+            obs.obs_data_set_int(settings, "monitor_override_dw", 3840)
+            obs.obs_data_set_int(settings, "monitor_override_dh", 2160)
+        end
+        return true
+    elseif name == "use_monitor_override" then
         local visible = obs.obs_data_get_bool(settings, "use_monitor_override")
         obs.obs_property_set_visible(obs.obs_properties_get(props, "monitor_override_label"), not visible)
         obs.obs_property_set_visible(obs.obs_properties_get(props, "monitor_override_x"), visible)
@@ -1197,7 +1264,14 @@ function on_print_help()
         "Scale X: The x scale factor to apply to the mouse position if the source size is not 1:1 (useful for cloned sources)\n" ..
         "Scale Y: The y scale factor to apply to the mouse position if the source size is not 1:1 (useful for cloned sources)\n" ..
         "Monitor Width: The width of the monitor that is showing the source (in pixels)\n" ..
-        "Monitor Height: The height of the monitor that is showing the source (in pixels)\n"
+        "Monitor Height: The height of the monitor that is showing the source (in pixels)\n\n" ..
+        "macOS Banner Notifications Setup:\n" ..
+        "If notification popups do not show up when zooming in/out on macOS:\n" ..
+        "1. Open System Settings -> Notifications on your Mac.\n" ..
+        "2. Locate 'Script Editor' or 'Terminal'.\n" ..
+        "3. Change Alert style to 'Banners' or 'Alerts' and enable 'Allow Notifications'.\n" ..
+        "4. Ensure 'Do Not Disturb' / Focus mode is disabled.\n" ..
+        "5. In OBS, ensure your Display Capture source transform is set to 'Fit to Screen' (Cmd + F).\n\n"
 
     if socket_available then
         help = help ..
@@ -1261,6 +1335,15 @@ function script_properties()
 
     local override_props = obs.obs_properties_create();
     local override_label = obs.obs_properties_add_text(override_props, "monitor_override_label", "", obs.OBS_TEXT_INFO)
+    
+    local preset_list = obs.obs_properties_add_list(override_props, "device_preset", "Device Preset", obs.OBS_COMBO_TYPE_LIST, obs.OBS_COMBO_FORMAT_STRING)
+    obs.obs_property_list_add_string(preset_list, "Custom", "custom")
+    obs.obs_property_list_add_string(preset_list, "MacBook Pro 14-inch (3024x1964 @ 1512x982)", "mbp14")
+    obs.obs_property_list_add_string(preset_list, "MacBook Pro 16-inch (3456x2234 @ 1728x1117)", "mbp16")
+    obs.obs_property_list_add_string(preset_list, "MacBook Air 13-inch (2560x1664 @ 1280x832)", "mba13")
+    obs.obs_property_list_add_string(preset_list, "Standard Full HD (1920x1080 @ 1920x1080)", "fhd")
+    obs.obs_property_list_add_string(preset_list, "Standard 4K UHD (3840x2160 @ 3840x2160)", "uhd")
+
     local override_x = obs.obs_properties_add_int(override_props, "monitor_override_x", "X", -10000, 10000, 1)
     local override_y = obs.obs_properties_add_int(override_props, "monitor_override_y", "Y", -10000, 10000, 1)
     local override_w = obs.obs_properties_add_int(override_props, "monitor_override_w", "Width", 0, 10000, 1)
@@ -1271,6 +1354,8 @@ function script_properties()
     local override_dh = obs.obs_properties_add_int(override_props, "monitor_override_dh", "Monitor Height ", 0, 10000, 1)
     local override = obs.obs_properties_add_group(props, "use_monitor_override", "Set manual source position ",
         obs.OBS_GROUP_CHECKABLE, override_props)
+
+    obs.obs_property_set_modified_callback(preset_list, on_settings_modified)
 
     obs.obs_property_set_long_description(override_label,
         "When enabled the specified size/position settings will be used for the zoom source instead of the auto-calculated ones")
@@ -1304,6 +1389,10 @@ function script_properties()
     local help = obs.obs_properties_add_button(props, "help_button", "More Info", on_print_help)
     obs.obs_property_set_long_description(help,
         "Click to show help information (via the script log)")
+
+    local sound = obs.obs_properties_add_bool(props, "enable_notification_sound", "Enable notification sound ")
+    obs.obs_property_set_long_description(sound,
+        "When enabled, an audio chime will play when zooming in or out (Disabled by default for quiet operation)")
 
     local debug = obs.obs_properties_add_bool(props, "debug_logs", "Enable debug logging ")
     obs.obs_property_set_long_description(debug,
@@ -1351,6 +1440,8 @@ function script_load(settings)
     obs.obs_data_array_release(hotkey_save_array)
 
     -- Load any other settings
+    source_name = obs.obs_data_get_string(settings, "source")
+    indicator_source_name = obs.obs_data_get_string(settings, "indicator_source")
     zoom_value = obs.obs_data_get_double(settings, "zoom_value")
     zoom_speed = obs.obs_data_get_double(settings, "zoom_speed")
     use_auto_follow_mouse = obs.obs_data_get_bool(settings, "follow")
@@ -1373,6 +1464,7 @@ function script_load(settings)
     socket_port = obs.obs_data_get_int(settings, "socket_port")
     socket_poll = obs.obs_data_get_int(settings, "socket_poll")
     debug_logs = obs.obs_data_get_bool(settings, "debug_logs")
+    enable_notification_sound = obs.obs_data_get_bool(settings, "enable_notification_sound")
 
     obs.obs_frontend_add_event_callback(on_frontend_event)
 
@@ -1444,19 +1536,21 @@ function script_defaults(settings)
     obs.obs_data_set_default_int(settings, "follow_safezone_sensitivity", 4)
     obs.obs_data_set_default_bool(settings, "follow_auto_lock", false)
     obs.obs_data_set_default_bool(settings, "allow_all_sources", false)
-    obs.obs_data_set_default_bool(settings, "use_monitor_override", false)
+    obs.obs_data_set_default_bool(settings, "use_monitor_override", true)
+    obs.obs_data_set_default_string(settings, "device_preset", "mbp14")
     obs.obs_data_set_default_int(settings, "monitor_override_x", 0)
     obs.obs_data_set_default_int(settings, "monitor_override_y", 0)
-    obs.obs_data_set_default_int(settings, "monitor_override_w", 1920)
-    obs.obs_data_set_default_int(settings, "monitor_override_h", 1080)
-    obs.obs_data_set_default_double(settings, "monitor_override_sx", 1)
-    obs.obs_data_set_default_double(settings, "monitor_override_sy", 1)
-    obs.obs_data_set_default_int(settings, "monitor_override_dw", 1920)
-    obs.obs_data_set_default_int(settings, "monitor_override_dh", 1080)
+    obs.obs_data_set_default_int(settings, "monitor_override_w", 3024)
+    obs.obs_data_set_default_int(settings, "monitor_override_h", 1964)
+    obs.obs_data_set_default_double(settings, "monitor_override_sx", 2.0)
+    obs.obs_data_set_default_double(settings, "monitor_override_sy", 2.0)
+    obs.obs_data_set_default_int(settings, "monitor_override_dw", 1512)
+    obs.obs_data_set_default_int(settings, "monitor_override_dh", 982)
     obs.obs_data_set_default_bool(settings, "use_socket", false)
     obs.obs_data_set_default_int(settings, "socket_port", 12345)
     obs.obs_data_set_default_int(settings, "socket_poll", 10)
     obs.obs_data_set_default_bool(settings, "debug_logs", false)
+    obs.obs_data_set_default_bool(settings, "enable_notification_sound", false)
 end
 
 function script_save(settings)
@@ -1491,6 +1585,7 @@ function script_update(settings)
 
     -- Update the settings
     source_name = obs.obs_data_get_string(settings, "source")
+    indicator_source_name = obs.obs_data_get_string(settings, "indicator_source")
     zoom_value = obs.obs_data_get_double(settings, "zoom_value")
     zoom_speed = obs.obs_data_get_double(settings, "zoom_speed")
     use_auto_follow_mouse = obs.obs_data_get_bool(settings, "follow")
@@ -1513,6 +1608,7 @@ function script_update(settings)
     socket_port = obs.obs_data_get_int(settings, "socket_port")
     socket_poll = obs.obs_data_get_int(settings, "socket_poll")
     debug_logs = obs.obs_data_get_bool(settings, "debug_logs")
+    enable_notification_sound = obs.obs_data_get_bool(settings, "enable_notification_sound")
 
     -- Only do the expensive refresh if the user selected a new source
     if source_name ~= old_source_name and is_obs_loaded then
@@ -1560,6 +1656,21 @@ function populate_zoom_sources(list)
                 local name = obs.obs_source_get_name(source)
                 obs.obs_property_list_add_string(list, name, name)
             end
+        end
+
+        obs.source_list_release(sources)
+    end
+end
+
+function populate_all_sources(list)
+    obs.obs_property_list_clear(list)
+
+    local sources = obs.obs_enum_sources()
+    if sources ~= nil then
+        obs.obs_property_list_add_string(list, "<None>", "obs-zoom-to-mouse-none")
+        for _, source in ipairs(sources) do
+            local name = obs.obs_source_get_name(source)
+            obs.obs_property_list_add_string(list, name, name)
         end
 
         obs.source_list_release(sources)

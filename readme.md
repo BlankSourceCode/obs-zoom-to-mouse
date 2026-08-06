@@ -114,6 +114,37 @@ I don't know of an easy way of getting these values automatically otherwise I wo
 
 Note: If you are also using a `transform crop` on the non-display capture source, you will need to manually convert it to a `Crop/Pad Filter` instead (the script has trouble trying to auto convert it for you for non-display sources).
 
+### Device Presets (Retina / Mac Support)
+When enabling `Set manual source position`, you can select from common device hardware presets to automatically populate pixel dimensions and scale factors:
+* **MacBook Pro 14-inch** *(3024x1964 @ 1512x982, Scale 2.0)*
+* **MacBook Pro 16-inch** *(3456x2234 @ 1728x1117, Scale 2.0)*
+* **MacBook Air 13-inch** *(2560x1664 @ 1280x832, Scale 2.0)*
+* **Standard Full HD 1080p** *(1920x1080 @ 1920x1080, Scale 1.0)*
+* **Standard 4K UHD** *(3840x2160 @ 3840x2160, Scale 1.0)*
+
+You can also customize any of these values manually.
+
+### macOS Banner Notifications & Sound Toggle
+On macOS, the script triggers native silent macOS banner notifications when zooming in (`Zoomed In 2.0x`) and zooming out (`Zoomed Out`) without making noise by default:
+
+![macOS Zoomed In Notification](docs/images/macos-notification-zoomed-in.png)  
+![macOS Zoomed Out Notification](docs/images/macos-notification-zoomed-out.png)
+
+If you prefer audio feedback, you can enable **Enable notification sound** in the script settings panel to play a system chime (`Pop`) when toggling zoom.
+
+> **Note on macOS Banner Popups:**  
+> If notification banners do not pop up on screen:
+> 1. Open **System Settings** -> **Notifications** on your Mac.
+> 2. Select **Script Editor** (or **Terminal** / **OBS**).
+> 3. Change Alert style to **Banners** or **Alerts** and ensure **Allow Notifications** is enabled.
+> 4. Ensure **Do Not Disturb / Focus Mode** is turned off.
+
+### Important: Canvas Fitting ("Fit to Screen")
+If your zoom focus appears misaligned or shifted away from the cursor on Retina displays (e.g. MacBook Pro):
+* Right-click your `Display Capture` source on the OBS Canvas.
+* Select **Transform** -> **Fit to Screen** (or press `Cmd + F`).
+* Click **Reload Scripts** in the OBS Scripts window.
+
 ## Known Limitations
 * Only works on `Display Capture` sources (automatically)
    * In theory it should be able to work on window captures too, if there was a way to get the mouse position relative to that specific window
@@ -124,7 +155,7 @@ Note: If you are also using a `transform crop` on the non-display capture source
    * The script will also work with `Pipewire` sources, but you will need to enable `Allow any zoom source` and `Set manual source position` since the script cannot get the size by itself.
 
 * Using Mac:
-   * When using `Set manual source position` you may need to set the `Monitor Height` value as it is used to invert the Y coordinate of the mouse position so that it matches the values of Windows and Linux that the script expects.
+   * Use the **Device Presets** under `Set manual source position` for instant Retina display scaling setup (e.g. MacBook Pro 14"/16" presets).
 
 ## Development Setup
 * Clone this repo
