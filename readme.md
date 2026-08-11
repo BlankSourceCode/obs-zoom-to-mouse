@@ -5,16 +5,33 @@ An OBS lua script to zoom a display-capture source to focus on the mouse.
 I made this for my own use when recording videos as I wanted a way to zoom into my IDE when highlighting certain sections of code. My particular setup didn't seem to work very well with the existing zooming solutions so I created this.
 
 Built with OBS v29.1.3
+Tested and fixed for compatibility with OBS v32.2.1
 
 Now works on **Windows**, **Linux**, and **Mac**
 
 Inspired by [tryptech](https://github.com/tryptech)'s [obs-zoom-and-follow](https://github.com/tryptech/obs-zoom-and-follow)
 
+This fork is maintained by [Hazem](https://github.com/hazem-codes)
+
+
+## Fixes in this Fork
+
+This fork includes a fix for OBS Studio v30+ (tested on v32.2.1) where the script
+would fail to load with the following error:
+**Cause:** OBS deprecated and removed `obs_sceneitem_get_info` and
+`obs_sceneitem_set_info` in favor of `obs_sceneitem_get_info2` and
+`obs_sceneitem_set_info2`.
+
+**Fix:** Updated all references in `obs-zoom-to-mouse.lua`:
+- `obs_sceneitem_get_info` → `obs_sceneitem_get_info2`
+- `obs_sceneitem_set_info` → `obs_sceneitem_set_info2`
+
 ## Example
 ![Usage Demo](obs-zoom-to-mouse.gif)
 
 ## Install
-1. Git clone the repo (or just save a copy of `obs-zoom-to-mouse.lua`)
+1. Git clone this repo: `git clone https://github.com/hazem-codes/obs-zoom-to-mouse.git`
+   (or just save a copy of `obs-zoom-to-mouse.lua`)
 1. Launch OBS
 1. In OBS, add a `Display Capture` source (if you don't have one already)
 1. In OBS, open Tools -> Scripts
@@ -131,9 +148,8 @@ Note: If you are also using a `transform crop` on the non-display capture source
 * Edit `obs-zoom-to-mouse.lua`
 * Click `Reload Scripts` in the OBS Scripts window
 
-##
 
-Want to support me staying awake long enough to add some more features?
+## Credits
 
-<a href="https://www.buymeacoffee.com/blanksourcecode" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/default-orange.png" alt="Buy Me A Coffee" height="41" width="174"></a>
-
+- Original script by [BlankSourceCode](https://github.com/BlankSourceCode)
+- OBS v32.2.1 compatibility fix by [Hazem](https://github.com/hazem-codes)
